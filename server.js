@@ -65,7 +65,11 @@ let driver = null;
 const queue = [];
 let wake;
 let memory = existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : ''; // prepended to the first prompt: pick up where we left off
+// Busy flag, so teammates prompting at the same time can see the agent is mid-turn.
+let busy = false;
+const setBusy = (b) => { if (b !== busy) { busy = b; broadcast({ type: 'status', busy }); } };
 const push = (text) => {
+  setBusy(true);
   queue.push(memory ? `${promptMemory(memory)}\n\n${text}` : text);
   memory = '';
   wake?.();
@@ -99,6 +103,7 @@ async function runAgent() {
         const r = await askOps('Bash', { command: c.split('run:')[1].trim() });
         emit('agent', `(fake) approval result: ${r.behavior}`);
       }
+      if (!queue.length) setBusy(false);
     }
     return;
   }
@@ -116,6 +121,7 @@ async function runAgent() {
     },
   });
   for await (const m of q) {
+    if (m.type === 'result' && !queue.length) setBusy(false);
     if (m.type !== 'assistant') continue;
     for (const b of m.message.content) {
       if (b.type === 'text') agentSays(b.text);
@@ -230,6 +236,7 @@ wss.on('connection', (ws, req) => {
   const c = { name, role, token: t, origin: originOf(req) };
   clients.set(ws, c);
   send(ws, { type: 'role', role });
+  send(ws, { type: 'status', busy });
   const history = db.prepare('select ts,user,text from events order by id').all();
   history.forEach((r) => send(ws, r)); // history replay
   tell(ws, recap({ events: history, memory: existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '' })); // quick review for the joiner
@@ -239,6 +246,7 @@ wss.on('connection', (ws, req) => {
   ws.on('message', (raw) => {
     let m;
     try { m = JSON.parse(raw); } catch { return; }
+    if (m.type === 'typing') return clients.forEach((_, w) => w !== ws && send(w, { type: 'typing', name: c.name }));
     if (m.type === 'decide' && isOp(c) && pending.has(m.id)) {
       const p = pending.get(m.id);
       pending.delete(m.id);

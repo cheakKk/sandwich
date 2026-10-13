@@ -10,12 +10,14 @@
   .ev.agent b { background: #1b1b1b; }
   .ev.system b { background: #7a7a7a; }
   .ask { border: 3px solid #e8412c; padding: 8px; margin: 0 0 10px; }
+  #status { min-height: 1.4em; padding: 0 16px; font-style: italic; }
   form { display: flex; gap: 8px; padding: 12px; background: #1b1b1b; }
   input { font: inherit; padding: 8px; border: 0; }
   #text { flex: 1; }
   button { font: inherit; background: #e8412c; color: #fff; border: 0; padding: 8px 16px; cursor: pointer; }
 </style>
 <div id="log"></div>
+<div id="status"></div>
 <form id="f"><input id="text" placeholder="steer the agent, or /help" autofocus><button>Send</button></form>
 <script>
   const log = document.getElementById('log');
@@ -24,14 +26,24 @@
   localStorage.setItem('u', me);
   const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/?t=' + encodeURIComponent(t) + '&n=' + encodeURIComponent(me));
   const add = (el) => { log.append(el); log.scrollTop = log.scrollHeight; };
-  const asks = {};
+  const asks = {}, typers = {};
+  let busy = false;
+  const showStatus = () => {
+    const who = Object.keys(typers).filter((n) => typers[n] > Date.now());
+    status.textContent = [busy && 'agent is working', who.length && who.join(', ') + (who.length > 1 ? ' are' : ' is') + ' typing'].filter(Boolean).join(' · ');
+  };
+  let lastTyped = 0;
+  text.oninput = () => { if (ws.readyState === 1 && Date.now() - lastTyped > 1500) { lastTyped = Date.now(); ws.send(JSON.stringify({ type: 'typing' })); } };
   ws.onclose = (e) => {
     if (e.code === 4401) log.textContent = 'Sandwich is invite only. Invite links work once and expire. Ask the owner for a new one.';
     if (e.code === 4403) log.textContent = 'You were removed from this session.';
   };
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
-    if (m.type === 'role') document.title = 'Sandwich (' + m.role + ')';
+    if (m.type === 'status') { busy = m.busy; showStatus(); }
+    else if (m.type === 'typing') {
+      typers[m.name] = Date.now() + 3000; showStatus(); setTimeout(showStatus, 3100);
+    } else if (m.type === 'role') document.title = 'Sandwich (' + m.role + ')';
     else if (m.type === 'session') history.replaceState(null, '', '#' + m.token); // the invite is burned; keep our own session so refresh works
     else if (m.type === 'approval') {
       const d = document.createElement('div'); d.className = 'ask'; asks[m.id] = d;

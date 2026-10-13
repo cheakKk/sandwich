@@ -39,6 +39,13 @@ assert(heard(b, 'This session is new') || heard(b, 'Quick review'), 'joiner gets
 
 b.got.length = 0; say(b, 'use passkeys'); await wait();
 assert(o.got.some((e) => e.user === 'agent' && e.text.includes('bob: use passkeys')), 'member steers agent');
+
+// simultaneous use: everyone sees whether the agent is busy, and who else is typing
+const statuses = o.got.filter((m) => m.type === 'status').map((m) => m.busy);
+assert(statuses.includes(true) && statuses.at(-1) === false, 'status goes busy then idle: ' + statuses);
+b.send(JSON.stringify({ type: 'typing' })); await wait();
+assert(o.got.some((m) => m.type === 'typing' && m.name === 'bob'), 'others see who is typing');
+assert(!b.got.some((m) => m.type === 'typing'), 'you are not told you are typing');
 const late = await open(await invite(o), 'fay'); await wait();
 assert(heard(late, 'Quick review'), 'later joiner sees what was completed');
 
