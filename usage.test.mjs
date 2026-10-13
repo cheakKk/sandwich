@@ -89,3 +89,25 @@ test('overBudget: only a set budget can be exceeded', () => {
   assert.equal(overBudget(4.99, 5), false);
   assert.equal(overBudget(1e6, null), false);
 });
+
+// --- busy heads-up ---
+import { headsUp, workingText } from './usage.mjs';
+
+test('workingText: who, what, how long, and how many tool calls', () => {
+  assert.equal(workingText({ name: 'ann', snippet: 'refactor login', ageMs: 42000, tools: 3 }), `ann's request "refactor login" (42s, 3 tool calls)`);
+  assert.equal(workingText({ name: 'ann', snippet: 'hi', ageMs: 65000, tools: 1 }), `ann's request "hi" (1m 05s, 1 tool call)`);
+  assert.equal(workingText({ name: 'bob', snippet: 'hi', ageMs: 800, tools: 0 }), `bob's request "hi" (0s)`);
+});
+
+test('workingText: long and multi-line requests are shortened to one tidy line', () => {
+  const t = workingText({ name: 'ann', snippet: 'a'.repeat(200) + '\nsecond line', ageMs: 1000, tools: 0 });
+  assert.ok(t.length < 110 && !t.includes('\n') && t.includes('…'));
+});
+
+test('headsUp: tells the sender what is running and that their message waits; nothing when idle', () => {
+  const w = { name: 'ann', snippet: 'build it', ageMs: 5000, tools: 2 };
+  const text = headsUp(w);
+  assert.match(text, /The agent is working on ann's request "build it" \(5s, 2 tool calls\)/);
+  assert.match(text, /queued behind it/);
+  assert.equal(headsUp(null), null);
+});

@@ -37,17 +37,20 @@
   };
   const add = (el) => { log.append(el); log.scrollTop = log.scrollHeight; };
   const asks = {}, typers = {};
-  let busy = false, role = '', mode = '';
+  let busy = false, working = null, receivedAt = 0, role = '', mode = '';
+  setInterval(() => { if (busy) showStatus(); }, 1000); // keeps the elapsed time ticking
   const setTitle = () => { document.title = 'Sandwich (' + role + (mode ? ', ' + mode : '') + ')'; };
   const showStatus = () => {
     const who = Object.keys(typers).filter((n) => typers[n] > Date.now());
-    document.getElementById('status').textContent = [busy && 'agent is working', who.length && who.join(', ') + (who.length > 1 ? ' are' : ' is') + ' typing'].filter(Boolean).join(' · ');
+    const s = working ? Math.floor((working.ageMs + Date.now() - receivedAt) / 1000) : 0;
+    const what = working ? `agent is working on ${working.name}'s request "${working.snippet.replace(/\s+/g, ' ').slice(0, 60)}" (${s}s${working.tools ? `, ${working.tools} tool call${working.tools === 1 ? '' : 's'}` : ''})` : 'agent is working';
+    document.getElementById('status').textContent = [busy && what, who.length && who.join(', ') + (who.length > 1 ? ' are' : ' is') + ' typing'].filter(Boolean).join(' · ');
   };
   let lastTyped = 0;
   text.oninput = () => { if (ws.readyState === 1 && Date.now() - lastTyped > 1500) { lastTyped = Date.now(); ws.send(JSON.stringify({ type: 'typing' })); } };
   const onMessage = (e) => {
     const m = JSON.parse(e.data);
-    if (m.type === 'status') { busy = m.busy; showStatus(); }
+    if (m.type === 'status') { busy = m.busy; working = m.working; receivedAt = Date.now(); showStatus(); }
     else if (m.type === 'typing') {
       typers[m.name] = Date.now() + 3000; showStatus(); setTimeout(showStatus, 3100);
     } else if (m.type === 'role') { role = m.role; setTitle(); }

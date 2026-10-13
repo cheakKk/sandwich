@@ -39,7 +39,7 @@ async function suite(env, files) {
 
 await suite({ FAKE: '1' }, ['check.mjs', 'check-memory.mjs', 'check-abuse.mjs']);
 await suite({ FAKE: '1' }, ['check-ui.mjs']);
-await suite({ FAKE: '1' }, ['check-usage.mjs', 'check-trust-local.mjs']);
+await suite({ FAKE: '1' }, ['check-usage.mjs', 'check-trust-local.mjs', 'check-headsup.mjs']);
 await suite({ FAKE: '1', SANDWICH_SANDBOXED: '1', SANDWICH_DEFAULT_GUEST_CAP: '200', SANDWICH_MAX_TOOLS_PER_TURN: '5', SANDWICH_MAX_QUEUE: '5' }, ['check-trust.mjs']);
 await suite({ FAKE: '1', SANDWICH_BUDGET_USD: '0.015' }, ['check-budget.mjs']);
 await suite({ AGENT: 'codex', FAKE_CODEX: '1', CODEX_TRUST_MEMBERS: '1' }, ['check-codex.mjs']);

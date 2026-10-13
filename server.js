@@ -12,7 +12,7 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
 import { fakeCodex, runCodex } from './codex.mjs';
-import { claudeTurn, codexTurn, creditTurn, dayStart, effectiveCap, formatUsage, overBudget, overCap, toolLimiter } from './usage.mjs';
+import { claudeTurn, codexTurn, creditTurn, dayStart, effectiveCap, formatUsage, headsUp, overBudget, overCap, toolLimiter } from './usage.mjs';
 import { compactMemory, dbPath, originFrom, parseSummary, promptMemory, readScope, recap, takeBatch, ttlText } from './lib.mjs';
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -191,13 +191,18 @@ let wake;
 let memoryPending = true; // the project memory is prepended to the first prompt, read fresh then: pick up where we left off
 // Busy flag, so teammates prompting at the same time can see the agent is mid-turn.
 let busy = false;
-const setBusy = (b) => { if (b !== busy) { busy = b; broadcast({ type: 'status', busy }); } };
+// What the agent is doing right now, so the next person to prompt knows what they are queued behind: {by, snippet, since, tools}.
+let working = null;
+const statusMsg = () => ({ type: 'status', busy, working: working && { name: working.by.name, snippet: working.snippet, ageMs: Date.now() - working.since, tools: working.tools } });
+const setBusy = (b) => { if (b !== busy) { busy = b; if (!b) working = null; broadcast(statusMsg()); } };
+const noteTool = () => { if (working) { working.tools++; broadcast(statusMsg()); } };
 const SYSTEM = { key: 'system', name: 'system' };
-const push = (text, { op = true, withMemory = true, by = SYSTEM } = {}) => {
+const push = (text, { op = true, withMemory = true, by = SYSTEM, snippet = text } = {}) => {
+  if (!busy) working = { by, snippet, since: Date.now(), tools: 0 };
   setBusy(true);
   const memory = withMemory && memoryPending && existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '';
   memoryPending = false;
-  queue.push({ text: memory ? `${promptMemory(memory)}\n\n${text}` : text, op, by });
+  queue.push({ text: memory ? `${promptMemory(memory)}\n\n${text}` : text, op, by, snippet });
   wake?.();
 };
 
@@ -216,13 +221,16 @@ function onClaudeResult(m) {
   claudeTotal = t.total;
   const { by, rest } = creditTurn(senders, m.queued_turn_count);
   senders = rest;
+  // if more turns are waiting, the next one belongs to the next sender
+  const next = senders[0] ?? queue[0];
+  if (next) working = { by: { key: next.key ?? next.by.key, name: next.name ?? next.by.name }, snippet: next.snippet, since: Date.now(), tools: 0 };
   recordUsage(by, 'claude', t);
 }
 async function* inputs() {
   for (;;) {
     while (queue.length) {
       const item = queue.shift();
-      senders.push(item.by);
+      senders.push({ ...item.by, snippet: item.snippet }); // creditTurn only needs key and name; the snippet says what the next turn is about
       yield { type: 'user', message: { role: 'user', content: item.text }, parent_tool_use_id: null, session_id: '' };
     }
     await new Promise((r) => (wake = r));
@@ -279,7 +287,7 @@ async function runCodexAgent() {
     },
     onUsage: (u) => recordUsage(codexBy, 'codex', codexTurn(u)),
     say: agentSays,
-    tool: (line) => emit('agent', line),
+    tool: (line) => { emit('agent', line); noteTool(); },
     idle: () => { if (!queue.length) setBusy(false); },
     onThread: (id) => db.prepare("insert or replace into kv(k, v) values('codex_thread', ?)").run(id),
     onError: (m) => emit('system', m),
@@ -341,7 +349,7 @@ async function runAgent() {
     if (m.type !== 'assistant') continue;
     for (const b of m.message.content) {
       if (b.type === 'text') agentSays(b.text);
-      else if (b.type === 'tool_use') emit('agent', `[tool] ${b.name} ${JSON.stringify(b.input).slice(0, 120)}`);
+      else if (b.type === 'tool_use') { emit('agent', `[tool] ${b.name} ${JSON.stringify(b.input).slice(0, 120)}`); noteTool(); }
     }
   }
 }
@@ -466,7 +474,7 @@ function command(ws, c, line) {
       }, 5 * 60 * 1000);
       const log = existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '';
       memoryPending = false; // the prompt below already carries the memory
-      return push(`Summarize this project for the team in under 150 words: goal, current state, open tasks, next step. Do not use any tools. Start your reply with "SUMMARY:".\n\n${promptMemory(log)}`, { op: true, withMemory: false, by: { key: c.key, name: c.name } });
+      return push(`Summarize this project for the team in under 150 words: goal, current state, open tasks, next step. Do not use any tools. Start your reply with "SUMMARY:".\n\n${promptMemory(log)}`, { op: true, withMemory: false, by: { key: c.key, name: c.name }, snippet: 'writing the project summary' });
     }
     default: return tell(ws, `unknown command. ${HELP}`);
   }
@@ -559,7 +567,7 @@ wss.on('connection', (ws, req) => {
   const c = { name, role, token: t, key, origin: originFrom(req.headers, !!tls), dead: false };
   clients.set(ws, c);
   send(ws, { type: 'role', role, name });
-  send(ws, { type: 'status', busy });
+  send(ws, statusMsg());
   send(ws, { type: 'mode', mode });
   tell(ws, MODE_NOTE[mode]);
   recent.all(REPLAY).forEach((r) => send(ws, r)); // history replay
@@ -598,7 +606,8 @@ wss.on('connection', (ws, req) => {
       // explicit caps apply to anyone but the owner; the Trusted-mode default applies to plain members only
       const cap = c.role === 'owner' ? null : effectiveCap(getKv('cap:' + c.key), c.role === 'member' ? mode : 'guarded', DEFAULT_GUEST_CAP);
       if (overCap(tokensToday.get(c.key, dayStart(Date.now())).n, cap)) return tell(ws, `you have reached your daily usage cap (${cap} tokens). Your message is visible but was not sent to the agent; the owner can raise it.`);
-      push(`${c.name}: ${m.text.replace(/\s*[\r\n]+\s*/g, ' / ')}`, { op: isOp(c), by: { key: c.key, name: c.name } }); // one line, so a message can't pose as another sender
+      if (busy && working) tell(ws, headsUp({ name: working.by.name, snippet: working.snippet, ageMs: Date.now() - working.since, tools: working.tools }));
+      push(`${c.name}: ${m.text.replace(/\s*[\r\n]+\s*/g, ' / ')}`, { op: isOp(c), by: { key: c.key, name: c.name }, snippet: m.text }); // one line, so a message can't pose as another sender
     } catch (e) {
       console.error('message handler:', e);
     }

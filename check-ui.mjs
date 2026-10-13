@@ -43,7 +43,7 @@ try {
   await new Promise((r) => bot.on('open', r));
   bot.send(JSON.stringify({ text: 'run: ls' }));
   await wait(1200);
-  assert.equal(await read("document.getElementById('status').textContent"), 'agent is working');
+  assert.match(await read("document.getElementById('status').textContent"), /agent is working on bot's request "run: ls"/);
   assert(await read("!!document.querySelector('.ask') && document.querySelector('.ask pre').textContent.includes('ls')"), 'approval card shows the full tool input');
   bot.send(JSON.stringify({ type: 'typing' }));
   await wait(600);

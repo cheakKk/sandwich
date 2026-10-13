@@ -59,3 +59,12 @@ export function toolLimiter(max) {
 }
 
 export const overBudget = (spentUsd, budgetUsd) => budgetUsd != null && spentUsd >= budgetUsd;
+
+const tidy = (s, max = 60) => { const one = String(s ?? '').replace(/\s+/g, ' ').trim(); return one.length > max ? one.slice(0, max - 1) + '…' : one; };
+const age = (ms) => { const s = Math.floor(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
+
+// What the agent is doing right now, in one phrase: {name, snippet, ageMs, tools}.
+export const workingText = (w) => `${w.name}'s request "${tidy(w.snippet)}" (${age(w.ageMs)}${w.tools ? `, ${w.tools} tool call${w.tools === 1 ? '' : 's'}` : ''})`;
+
+// Shown privately to someone who prompts while the agent is busy, so they know what they are queued behind.
+export const headsUp = (w) => (w ? `The agent is working on ${workingText(w)}. Your message is queued behind it and will be sent when it finishes.` : null);
