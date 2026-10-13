@@ -90,6 +90,57 @@ const mem = await (await fetch(`${BASE}/memory`, { headers: { authorization: 'Be
 assert(mem.includes('note (bobby): forged?') && !mem.includes('(owner): forged?'), 'author comes from the session, not the request');
 assert.equal((await fetch(`${BASE}/memoryfoo`, { headers: { authorization: 'Bearer ' + owner } })).headers.get('content-type'), 'text/html', '/memoryfoo is not the memory API');
 
+// --- batch 3: host exhaustion, revoke, expiry, approval timeout, origin, headers ---
+// one member cannot open unlimited sockets
+const hog = await join(o, 'hog');
+const extra = [await open(hog.token, 'hog'), await open(hog.token, 'hog')]; await wait();
+const fourth = await open(hog.token, 'hog'); await wait();
+assert.equal(fourth.code, 4408, 'a member is limited to a few connections');
+[...extra, hog.ws].forEach((w) => w.close());
+
+// typing indicators count against a shared per-member limit, whatever the number of tabs
+const typer = await join(o, 'typer'); const tmark = o.got.length;
+for (let i = 0; i < 30; i++) { typer.ws.send(JSON.stringify({ type: 'typing' })); await wait(40); }
+const typed = o.got.slice(tmark).filter((m) => m.type === 'typing').length;
+assert(typed > 0 && typed <= 6, 'typing is rate limited: ' + typed);
+
+// /members lists everyone, /revoke removes someone who is offline, and only ops may
+const gone = await join(o, 'gone'); gone.ws.close(); await wait();
+const mm = o.got.length; say(o, '/members'); await wait();
+assert(o.got.slice(mm).some((e) => e.text?.includes('gone (member, offline)')), '/members shows offline members');
+say(typer.ws, '/revoke gone'); await wait();
+assert(heard(typer.ws, "don't have permission"), 'a member cannot revoke');
+say(o, '/revoke gone'); await wait();
+assert.equal((await open(gone.token, 'gone').then(async (w) => (await wait(), w))).code, 4401, 'a revoked offline member cannot come back');
+const um = o.got.length; say(o, '/op'); say(o, '/kick'); say(o, '/revoke'); await wait();
+assert(o.got.slice(um).filter((e) => e.text?.includes('usage')).length === 3, 'commands that need a name say so');
+
+// sessions expire
+const sdb = new DatabaseSync(process.env.SANDWICH_DB);
+const old = await join(o, 'oldtimer'); old.ws.close(); await wait();
+sdb.prepare("update tokens set expires = 1 where name = 'oldtimer'").run();
+assert.equal((await open(old.token, 'oldtimer').then(async (w) => (await wait(), w))).code, 4401, 'an expired session is refused');
+
+// an approval nobody answers is denied after a timeout instead of hanging the agent
+const tm = o.got.length; say(o, 'run: sleep'); await wait(3600);
+assert(o.got.slice(tm).some((e) => e.text?.includes('approval result: deny')), 'unanswered approval is auto-denied');
+
+// the page cannot be framed, and cross-site pages cannot open the socket
+const page = await fetch(`${BASE}/`);
+assert.equal(page.headers.get('x-frame-options'), 'DENY');
+assert(page.headers.get('content-security-policy')?.includes("default-src 'self'"), 'CSP is set');
+const evil = new WebSocket(`ws://127.0.0.1:3000/?t=${owner}&n=x`, { headers: { origin: 'http://evil.example' } });
+assert.equal(await new Promise((r) => { evil.on('close', r); evil.on('error', () => {}); }), 4403, 'a foreign Origin is refused');
+const friendly = new WebSocket(`ws://127.0.0.1:3000/?t=${owner}&n=x`, { headers: { origin: 'http://127.0.0.1:3000' } });
+assert(await new Promise((r) => { friendly.on('open', () => r(true)); friendly.on('close', () => r(false)); friendly.on('error', () => {}); }), 'the same Origin is fine');
+friendly.close();
+
+// the event log is pruned so one chatty member cannot fill the disk
+for (let i = 0; i < 450; i++) await post('note', 'bulk' + i);
+await wait(300);
+const count = sdb.prepare('select count(*) as n from events').get().n;
+assert(count > 0 && count <= 500, 'events are pruned to about EVENT_KEEP: ' + count);
+
 // C1: the database stores hashes only, so a leaked file is not a set of working tokens
 const db = new DatabaseSync(process.env.SANDWICH_DB, { readOnly: true });
 const stored = db.prepare('select token from tokens').all().map((r) => r.token);

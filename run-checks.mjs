@@ -26,7 +26,7 @@ record('unit tests', spawnSync('node', ['--test', ...unitFiles], { cwd: here, st
 async function suite(env, files) {
   const dir = mkdtempSync(join(tmpdir(), 'sandwich-'));
   const db = join(dir, 'data.db');
-  const server = spawn('node', [join(here, 'server.js')], { cwd: dir, env: { ...process.env, EXPOSE_TOKEN: '1', INVITE_TTL_MS: '1500', MEM_RATE: '1000', SANDWICH_DB: db, ...env }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const server = spawn('node', [join(here, 'server.js')], { cwd: dir, env: { ...process.env, EXPOSE_TOKEN: '1', INVITE_TTL_MS: '1500', MEM_RATE: '1000', EVENT_KEEP: '400', PENDING_TTL_MS: '3000', SANDWICH_DB: db, ...env }, stdio: ['ignore', 'pipe', 'inherit'] });
   const token = await new Promise((resolve) => {
     const t = setTimeout(() => resolve(null), 15000);
     server.stdout.on('data', (d) => /HOST_TOKEN=(\w+)/.test(d) && (clearTimeout(t), resolve(RegExp.$1)));

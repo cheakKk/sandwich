@@ -5,7 +5,7 @@
 //                                  /handoff [name] /save /who /token /help
 import http from 'node:http';
 import https from 'node:https';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname } from 'node:path';
@@ -22,6 +22,12 @@ const MAX_ENTRY = 2000; // one memory entry
 const MAX_MEMORY_BYTES = 1024 * 1024;
 const MEM_RATE = Number(process.env.MEM_RATE) || 200; // memory API writes per 10s per token
 const REPLAY = 300; // events replayed to a joiner
+const EVENT_KEEP = Number(process.env.EVENT_KEEP) || 5000; // chat history kept; older events are pruned so nobody can fill the disk
+const PENDING_TTL_MS = Number(process.env.PENDING_TTL_MS) || 5 * 60 * 1000; // an unanswered approval is denied after this
+const MAX_PENDING = 20;
+const MAX_SOCKETS = 60; // in total
+const MAX_TABS = 3; // per member (the owner gets more)
+const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS) || 30 * 24 * 3600 * 1000; // sliding: renewed each time they connect
 
 // ponytail: log and keep serving rather than die on a bad frame; a supervisor/restart policy is the real fix.
 process.on('uncaughtException', (e) => console.error('uncaught:', e));
@@ -53,10 +59,12 @@ const delToken = db.prepare('delete from tokens where token = ?');
 const setRole = db.prepare('update tokens set role = ? where token = ?');
 db.prepare("delete from tokens where kind = 'invite' and expires < ?").run(Date.now());
 // Who does this token belong to? Session tokens only; an unredeemed invite is not an identity.
+const ownerHash = Buffer.from(hash(ownerToken));
 const whoIs = (t) => {
-  if (t === ownerToken) return { role: 'owner', name: 'owner' };
-  const row = getToken.get(hash(t));
-  return row?.kind === 'session' ? row : null;
+  const h = hash(t);
+  if (timingSafeEqual(Buffer.from(h), ownerHash)) return { role: 'owner', name: 'owner' };
+  const row = getToken.get(h);
+  return row?.kind === 'session' && (row.expires == null || row.expires > Date.now()) ? row : null;
 };
 
 // Names are identities in chat, /handoff and /kick: unique (case-insensitive), and these are never available.
@@ -73,12 +81,19 @@ const clean = (n, fallback) => String(n || '').replace(/\W/g, '').slice(0, 20) |
 const isOp = (c) => c.role === 'owner' || c.role === 'op';
 
 const clients = new Map(); // ws -> {name, role, token, key, origin, dead}
-const send = (ws, msg) => ws.readyState === 1 && ws.send(JSON.stringify(msg));
+// A client that doesn't read its socket would make the server buffer every broadcast for it: cut it off instead.
+const send = (ws, msg) => {
+  if (ws.readyState !== 1) return;
+  if (ws.bufferedAmount > 1e6) return ws.terminate();
+  ws.send(JSON.stringify(msg));
+};
 const broadcast = (msg) => clients.forEach((_, ws) => send(ws, msg));
 const tell = (ws, text) => send(ws, { ts: new Date().toISOString(), user: 'system', text }); // private, not stored
+let inserted = 0;
 function emit(user, text) {
   const ev = { ts: new Date().toISOString(), user, text };
   insert.run(ev.ts, user, text);
+  if (++inserted % 100 === 0) db.prepare('delete from events where id <= (select max(id) from events) - ?').run(EVENT_KEEP);
   broadcast(ev);
 }
 const socketsOf = (key) => [...clients.entries()].filter(([, c]) => c.key === key);
@@ -103,8 +118,16 @@ const askOps = (tool, input) =>
   allowed.has(tool)
     ? { behavior: 'allow' }
     : new Promise((resolve) => {
+        if (pending.size >= MAX_PENDING) return resolve({ behavior: 'deny' }); // a flood of requests must not bury the real ones
         const id = token().slice(0, 8);
-        pending.set(id, { resolve, tool, input });
+        // nobody answering must not hang the agent forever: deny after the timeout
+        const timer = setTimeout(() => {
+          if (!pending.delete(id)) return;
+          resolve({ behavior: 'deny' });
+          broadcast({ type: 'resolved', id, allow: false });
+          emit('system', `no op answered for ${tool}, so it was denied`);
+        }, PENDING_TTL_MS);
+        pending.set(id, { resolve, tool, input, timer });
         clients.forEach((c, ws) => isOp(c) && send(ws, { type: 'approval', id, tool, input }));
         emit('system', `waiting for an op to approve ${tool}`);
       });
@@ -224,6 +247,7 @@ async function runAgent() {
     options: {
       cwd: process.cwd(),
       settingSources: [], // ignore the machine owner's personal allow-lists; roles decide here
+      ...(Number(process.env.SANDWICH_MAX_BUDGET_USD) > 0 && { maxBudgetUsd: Number(process.env.SANDWICH_MAX_BUDGET_USD) }), // optional ceiling on what this session may spend on API usage
       allowedTools: ['Read', 'Glob', 'Grep'],
       hooks: { PreToolUse: [{ hooks: [guard] }] },
       canUseTool: async (tool, input) => {
@@ -243,7 +267,14 @@ async function runAgent() {
   }
 }
 
-const HELP = '/who /token /handoff [name] /save | ops: /invite /kick <name> | owner: /op <name> /deop <name> /allow <Tool> /deny <Tool> /sandbox <read-only|write> (codex)';
+// Remove a member for good: delete their token, close every tab, and hand the session back if they were driving.
+const removeMember = (key) => {
+  delToken.run(key);
+  for (const [w, m] of socketsOf(key)) { m.dead = true; clients.delete(w); w.close(4403, 'removed'); setTimeout(() => w.terminate(), 1000); }
+  clearDriverIfGone(key);
+};
+
+const HELP = '/who /members /token /handoff [name] /save | ops: /invite /kick <name> /revoke <name> | owner: /op <name> /deop <name> /allow <Tool> /deny <Tool> /sandbox <read-only|write> (codex)';
 
 function command(ws, c, line) {
   const [cmd, arg] = line.slice(1).split(/\s+/);
@@ -262,16 +293,28 @@ function command(ws, c, line) {
     case 'token': return tell(ws, `your token for the CLI/MCP (SANDWICH_TOKEN): ${c.token}`);
     case 'kick': {
       if (!need(isOp(c))) return;
+      if (!arg) return tell(ws, 'usage: /kick <name>');
       const target = byName(arg);
       if (!target || isOp(target[1])) return tell(ws, `no kickable member named ${arg}`);
-      const { key, name } = target[1];
-      delToken.run(key);
-      for (const [w, m] of socketsOf(key)) { m.dead = true; clients.delete(w); w.close(4403, 'removed'); setTimeout(() => w.terminate(), 1000); }
-      clearDriverIfGone(key);
-      return emit('system', `${name} was removed by ${c.name}`);
+      removeMember(target[1].key);
+      return emit('system', `${target[1].name} was removed by ${c.name}`);
+    }
+    case 'revoke': { // like /kick, but also works on someone who is offline
+      if (!need(isOp(c))) return;
+      if (!arg) return tell(ws, 'usage: /revoke <name>');
+      const row = db.prepare("select token, role, name from tokens where kind = 'session' and lower(name) = lower(?)").get(arg);
+      if (!row || (row.role === 'op' && c.role !== 'owner')) return tell(ws, `no revocable member named ${arg}`);
+      removeMember(row.token);
+      return emit('system', `${row.name} was revoked by ${c.name}`);
+    }
+    case 'members': {
+      const rows = db.prepare("select name, role from tokens where kind = 'session' order by name").all();
+      const online = new Set([...clients.values()].map((m) => m.name.toLowerCase()));
+      return tell(ws, rows.length ? rows.map((r) => `${r.name} (${r.role}, ${online.has(r.name.toLowerCase()) ? 'online' : 'offline'})`).join(', ') : 'no members yet');
     }
     case 'op': case 'deop': {
       if (!need(c.role === 'owner')) return;
+      if (!arg) return tell(ws, `usage: /${cmd} <name>`);
       const target = byName(arg);
       if (!target || target[1].role === 'owner') return tell(ws, `no member named ${arg}`);
       const role = cmd === 'op' ? 'op' : 'member';
@@ -349,7 +392,14 @@ function memoryApi(req, res) {
 // HTTPS: set SANDWICH_CERT and SANDWICH_KEY (PEM file paths) to terminate TLS here, or put a TLS proxy/tunnel
 // in front (it sends x-forwarded-proto/host, which invite links follow). Without either, plain http is localhost-only.
 const tls = process.env.SANDWICH_CERT && process.env.SANDWICH_KEY;
-const handler = (req, res) => (req.url.split('?')[0] === '/memory' ? memoryApi(req, res) : res.setHeader('content-type', 'text/html').end(page));
+// The page may not be framed by other sites, and may only load its own inline script and talk to its own server.
+const PAGE_HEADERS = {
+  'content-type': 'text/html',
+  'x-frame-options': 'DENY',
+  'x-content-type-options': 'nosniff',
+  'content-security-policy': "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
+};
+const handler = (req, res) => (req.url.split('?')[0] === '/memory' ? memoryApi(req, res) : res.writeHead(200, PAGE_HEADERS).end(page));
 const server = tls
   ? https.createServer({ cert: readFileSync(process.env.SANDWICH_CERT), key: readFileSync(process.env.SANDWICH_KEY) }, handler)
   : http.createServer(handler);
@@ -359,6 +409,14 @@ wss.on('connection', (ws, req) => {
   ws.on('error', () => {}); // protocol violations (bad frames, oversize) close this socket, never the server
   let q;
   try { q = new URL(req.url, 'http://x').searchParams; } catch { return ws.close(4401, 'bad request'); }
+  // A page on another site must not be able to open this socket from a visitor's browser. Non-browser clients send no Origin.
+  const origin = req.headers.origin;
+  if (origin) {
+    let from = null;
+    try { from = new URL(origin).host; } catch { /* malformed Origin: treated as foreign */ }
+    const here = String(req.headers['x-forwarded-host'] || req.headers.host).split(',')[0].trim();
+    if (from !== here) return ws.close(4403, 'this page is not allowed to connect');
+  }
   let t = q.get('t');
   let who = whoIs(t);
   const row = who ? null : getToken.get(hash(t));
@@ -367,7 +425,7 @@ wss.on('connection', (ws, req) => {
     if (row.expires > Date.now()) {
       const chosen = pick(clean(q.get('n'), 'guest'), [...sessionNames(), ...ownerNames, ...[...clients.values()].map((m) => m.name)]);
       t = token();
-      putToken(t, 'session', 'member', chosen, null);
+      putToken(t, 'session', 'member', chosen, Date.now() + SESSION_TTL_MS);
       who = { role: 'member', name: chosen };
       send(ws, { type: 'session', token: t });
     }
@@ -377,8 +435,11 @@ wss.on('connection', (ws, req) => {
   if (AGENT === 'codex' && !TRUST_MEMBERS && who.role !== 'owner') return ws.close(4403, 'codex mode is owner-only on this server');
   const { role } = who;
   let { name } = who;
+  const key = role === 'owner' ? 'owner' : hash(t);
+  if (clients.size >= MAX_SOCKETS || socketsOf(key).length >= (role === 'owner' ? 6 : MAX_TABS)) return ws.close(4408, 'too many connections');
+  if (role !== 'owner') db.prepare('update tokens set expires = ? where token = ?').run(Date.now() + SESSION_TTL_MS, key); // sliding expiry
   if (role === 'owner') { name = pick(clean(q.get('n'), 'owner'), sessionNames()); ownerNames.add(name); } // the owner chooses a name; members can't take it
-  const c = { name, role, token: t, key: role === 'owner' ? 'owner' : hash(t), origin: originFrom(req.headers, !!tls), dead: false };
+  const c = { name, role, token: t, key, origin: originFrom(req.headers, !!tls), dead: false };
   clients.set(ws, c);
   send(ws, { type: 'role', role, name });
   send(ws, { type: 'status', busy });
@@ -388,21 +449,20 @@ wss.on('connection', (ws, req) => {
   if (isOp(c)) pending.forEach((p, id) => send(ws, { type: 'approval', id, tool: p.tool, input: p.input }));
   emit('system', `${name} joined`);
   ws.on('close', () => { clients.delete(ws); clearDriverIfGone(c.key); if (clients.size && !c.dead) emit('system', `${name} left`); });
-  let lastTyping = 0;
   ws.on('message', (raw) => {
     try {
       let m;
       try { m = JSON.parse(raw); } catch { return; }
       if (c.dead || !m || typeof m !== 'object' || Array.isArray(m)) return;
       if (m.type === 'typing') {
-        if (Date.now() - lastTyping < 1000) return;
-        lastTyping = Date.now();
+        if (limited('typing:' + c.key, 5, 5000)) return; // shared across all of a member's tabs
         return clients.forEach((_, w) => w !== ws && send(w, { type: 'typing', name: c.name }));
       }
       if (m.type === 'decide') {
         if (!isOp(c) || typeof m.id !== 'string' || !pending.has(m.id)) return;
         const p = pending.get(m.id);
         pending.delete(m.id);
+        clearTimeout(p.timer);
         p.resolve({ behavior: m.allow === true ? 'allow' : 'deny' });
         return broadcast({ type: 'resolved', id: m.id, allow: m.allow === true });
       }
@@ -425,7 +485,7 @@ function agentStopped() {
   emit('system', 'the agent stopped. Restart the server to continue (details are in the server console).');
   setBusy(false);
   savePending = false;
-  pending.forEach((p) => p.resolve({ behavior: 'deny' }));
+  pending.forEach((p) => { clearTimeout(p.timer); p.resolve({ behavior: 'deny' }); });
   pending.clear();
 }
 runAgent().then(agentStopped, (e) => { console.error('agent:', e); agentStopped(); });
