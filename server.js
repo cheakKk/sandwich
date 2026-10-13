@@ -33,6 +33,11 @@ const whoIs = (t) => {
   const row = getToken.get(String(t));
   return row?.kind === 'session' ? row : null;
 };
+// Names are identities in chat, /handoff and /kick, so they must be unique and the owner's name is reserved.
+let ownerName = 'owner';
+const sessionNames = () => db.prepare("select name from tokens where kind = 'session'").all().map((r) => r.name);
+const pick = (base, taken) => { let n = base, i = 1; while (taken.has(n)) n = base + ++i; return n; };
+const clean = (n, fallback) => String(n || '').replace(/\W/g, '').slice(0, 20) || fallback;
 const isOp = (c) => c.role === 'owner' || c.role === 'op';
 
 const clients = new Map(); // ws -> {name, role, token, host}
@@ -224,7 +229,7 @@ wss.on('connection', (ws, req) => {
   if (row?.kind === 'invite') {
     delToken.run(t); // single-use, burned whether or not it had expired
     if (row.expires > Date.now()) {
-      const chosen = (q.get('n') || 'guest').replace(/\W/g, '').slice(0, 20) || 'guest';
+      const chosen = pick(clean(q.get('n'), 'guest'), new Set([...sessionNames(), ownerName, 'owner', ...[...clients.values()].map((m) => m.name)]));
       t = token();
       putToken.run(t, 'session', 'member', chosen, null);
       who = { role: 'member', name: chosen };
@@ -232,10 +237,12 @@ wss.on('connection', (ws, req) => {
     }
   }
   if (!who) return ws.close(4401, 'invite required');
-  const { role, name } = who;
+  const { role } = who;
+  let { name } = who;
+  if (role === 'owner') ownerName = name = pick(clean(q.get('n'), 'owner'), new Set(sessionNames())); // the owner chooses a name; members can't take it
   const c = { name, role, token: t, origin: originOf(req) };
   clients.set(ws, c);
-  send(ws, { type: 'role', role });
+  send(ws, { type: 'role', role, name });
   send(ws, { type: 'status', busy });
   const history = db.prepare('select ts,user,text from events order by id').all();
   history.forEach((r) => send(ws, r)); // history replay

@@ -34,6 +34,14 @@ assert(!again.code, 'session token reconnects');
 const stale = await invite(o); await wait(1700);
 assert.equal((await open(stale, 'zed').then(async (w) => (await wait(), w))).code, 4401, 'invite expires');
 
+// names are unique: nobody can pose as the owner or as another member
+const nameOf = (ws) => ws.got.find((m) => m.type === 'role')?.name;
+const twin = await open(await invite(o), 'bob'), poser = await open(await invite(o), 'ann'), fake = await open(await invite(o), 'owner'); await wait();
+assert(nameOf(twin) !== 'bob' && nameOf(twin).startsWith('bob'), 'duplicate member name is renamed: ' + nameOf(twin));
+assert(nameOf(poser) !== 'ann', 'member cannot take the owner name: ' + nameOf(poser));
+assert(nameOf(fake) !== 'owner' && nameOf(o) === 'ann', 'member cannot be called owner; owner keeps chosen name');
+[twin, poser, fake].forEach((w) => w.close());
+
 // joiners get a quick review of what happened so far
 assert(heard(b, 'This session is new') || heard(b, 'Quick review'), 'joiner gets a recap');
 
