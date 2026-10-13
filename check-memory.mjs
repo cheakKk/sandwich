@@ -3,6 +3,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import WebSocket from 'ws';
 const env = { ...process.env, SANDWICH_TOKEN: process.env.HOST_TOKEN, SANDWICH_NAME: 'bob' };
 execFileSync('node', ['client.mjs', 'add', 'decision', 'use passkeys'], { env });
@@ -29,4 +31,16 @@ assert(saved.startsWith('# Summary\nfake summary line'), 'summary written at top
 assert(saved.includes('login form shipped') && saved.includes('decision (owner): use passkeys') && saved.includes('handoff (owner): login half done'), 'progress entries survive /save');
 const n = saved.split('\n').filter((l) => l.startsWith('- [')).length;
 assert(n <= 100 && saved.includes('filler109') && !saved.includes('filler0 '), 'old notes trimmed, newest kept: ' + n);
+
+// progress is never deleted: past 150 protected lines the oldest are archived, and the old file is backed up
+for (let i = 0; i < 200; i++) await post('done', 'milestone' + i);
+ws.send(JSON.stringify({ text: '/save' }));
+await new Promise((r) => setTimeout(r, 800));
+const after = await (await fetch('http://127.0.0.1:3000/memory', { headers: H })).text();
+const protectedNow = after.split('\n').filter((l) => /^- \[[^\]]*\] (done|decision|handoff|task) \(/.test(l)).length;
+assert(protectedNow <= 150 && after.includes('milestone199'), 'protected lines bounded, newest kept: ' + protectedNow);
+const dir = dirname(process.env.SANDWICH_DB);
+const archive = readFileSync(join(dir, 'PROJECT_MEMORY.archive.md'), 'utf8');
+assert(archive.includes('milestone0') && archive.includes('login form shipped'), 'oldest progress lines were archived, not deleted');
+assert(existsSync(join(dir, 'PROJECT_MEMORY.md.bak')), 'a backup of the previous memory file exists');
 console.log('ok'); process.exit(0);

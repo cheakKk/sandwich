@@ -3,26 +3,32 @@
 
 // One chat line for events that are tool use, or null for everything else (messages, reasoning, todo lists).
 export function describeItem(ev) {
-  const i = ev.item;
-  if (ev.type === 'item.started' && i.type === 'command_execution') return `[tool] shell ${i.command.slice(0, 120)}`;
-  if (ev.type === 'item.completed' && i.type === 'command_execution' && (i.status === 'failed' || i.exit_code)) return `[tool] shell failed (exit ${i.exit_code ?? '?'}): ${i.command.slice(0, 100)}`;
+  const i = ev.item ?? {};
+  const cmd = String(i.command ?? '');
+  if (ev.type === 'item.started' && i.type === 'command_execution') return `[tool] shell ${cmd.slice(0, 120)}`;
+  if (ev.type === 'item.completed' && i.type === 'command_execution' && (i.status === 'failed' || i.exit_code)) return `[tool] shell failed (exit ${i.exit_code ?? '?'}): ${cmd.slice(0, 100)}`;
   if (ev.type === 'item.started' && i.type === 'mcp_tool_call') return `[tool] mcp ${i.server}.${i.tool}`;
-  if (ev.type === 'item.completed' && i.type === 'file_change') return `[tool] edit ${i.changes.map((c) => c.path).join(', ').slice(0, 120)}`;
+  if (ev.type === 'item.completed' && i.type === 'file_change') return `[tool] edit ${(i.changes ?? []).map((c) => c.path).join(', ').slice(0, 120)}`;
   return null;
 }
 
 // Runs one turn. Returns { failed, worked }: failed if it threw or reported an error, worked if it got as far as
 // doing anything (a tool or a reply), which matters because work that started must never be repeated.
 async function runTurn(thread, text, h) {
-  const r = { failed: false, worked: false };
-  const fail = (m) => { r.failed = true; h.onError(m); };
+  const r = { failed: false, worked: false, reasons: [] };
+  const fail = (m, why = m) => {
+    r.failed = true;
+    if (r.reasons.includes(why)) return; // turn.failed and error often report the same thing; say it once
+    r.reasons.push(why);
+    h.onError(m);
+  };
   try {
     const { events } = await thread.runStreamed(text);
     for await (const ev of events) {
       if (ev.type === 'thread.started') h.onThread(ev.thread_id);
-      else if (ev.type === 'turn.failed') fail(`codex turn failed: ${ev.error.message}`);
-      else if (ev.type === 'error') fail(`codex error: ${ev.message}`);
-      else if (ev.item?.type === 'error') fail(`codex: ${ev.item.message}`);
+      else if (ev.type === 'turn.failed') fail(`codex turn failed: ${ev.error.message}`, ev.error.message);
+      else if (ev.type === 'error') fail(`codex error: ${ev.message}`, ev.message);
+      else if (ev.item?.type === 'error') fail(`codex: ${ev.item.message}`, ev.item.message);
       else if (ev.type === 'item.completed' && ev.item.type === 'agent_message') { r.worked = true; h.say(ev.item.text); }
       else {
         const line = describeItem(ev);
@@ -30,10 +36,14 @@ async function runTurn(thread, text, h) {
       }
     }
   } catch (e) {
-    fail(`codex could not run: ${e.message}`);
+    fail(`codex could not run: ${e.message}`, e.message);
   }
   return r;
 }
+
+// Only an error that says the thread is gone justifies abandoning it. A rate limit, a 401 or a network blip must not
+// throw away the conversation: keep the saved session and let the next turn retry it.
+const GONE = /not found|no such|does not exist|no rollout|unknown (session|thread)|cannot find|missing/i;
 
 // Serve turns until next() returns null. next() waits for the next batch of teammate messages.
 // A failed turn is reported and the loop carries on, so one bad turn never ends the session.
@@ -49,7 +59,7 @@ export async function runCodex({ codex, threadId, options, next, say, tool, idle
     const thread = resumed ? codex.resumeThread(id, options()) : codex.startThread(options());
     // for a resumed thread, hold errors back until we know whether a fresh start will replace this attempt
     const first = await runTurn(thread, text, resumed ? { ...handlers, onError: (m) => errors.push(m) } : handlers);
-    if (resumed && first.failed && !first.worked) {
+    if (resumed && first.failed && !first.worked && GONE.test(first.reasons.join(' '))) {
       id = null;
       onError('the saved codex session is gone, starting a new session');
       await runTurn(codex.startThread(options()), text, handlers);

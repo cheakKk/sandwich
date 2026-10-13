@@ -1,3 +1,6 @@
 node_modules/
 sandwich.db*
 PROJECT_MEMORY.md
+PROJECT_MEMORY.archive.md
+PROJECT_MEMORY.md.bak
+PROJECT_MEMORY.md.tmp

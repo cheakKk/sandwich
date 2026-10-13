@@ -145,3 +145,26 @@ test('describeItem: failed commands are reported with their exit code', () => {
   assert.equal(failed, '[tool] shell failed (exit 2): npm test');
   assert.equal(describeItem({ type: 'item.completed', item: { type: 'command_execution', command: 'ls', status: 'completed', exit_code: 0 } }), null);
 });
+
+// --- review round 2 ---
+test('runCodex: a rate limit on a resumed thread keeps the saved session instead of discarding it', async () => {
+  const limited = [{ type: 'turn.failed', error: { message: 'rate limit exceeded, try again later' } }];
+  const codex = fakeCodex([limited, turn('same', say('works now'))]);
+  const seen = await drive(codex, ['a', 'b'], undefined, 'precious');
+  assert.equal(codex.calls.length, 2);
+  assert.equal(codex.calls[0].id, 'precious');
+  assert.equal(codex.calls[1].id, 'precious', 'the next turn still resumes the same session');
+  assert.ok(seen.error.some((m) => m.includes('rate limit')));
+  assert.ok(!seen.error.some((m) => /new session/i.test(m)));
+});
+
+test('runCodex: the same failure reported twice is shown once', async () => {
+  const dup = [{ type: 'turn.failed', error: { message: 'boom' } }, { type: 'error', message: 'boom' }];
+  const seen = await drive(fakeCodex([dup]), ['go']);
+  assert.equal(seen.error.filter((m) => m.includes('boom')).length, 1);
+});
+
+test('describeItem: a malformed item is ignored, not thrown on', () => {
+  assert.equal(describeItem({ type: 'item.started', item: { type: 'command_execution' } }), '[tool] shell ');
+  assert.equal(describeItem({ type: 'item.completed', item: { type: 'file_change' } }), '[tool] edit ');
+});

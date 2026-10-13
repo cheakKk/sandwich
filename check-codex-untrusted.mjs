@@ -20,4 +20,5 @@ const old = new WebSocket('ws://127.0.0.1:3000/?t=old-session-token&n=old');
 const code = await new Promise((r) => old.on('close', r));
 assert.equal(code, 4403, 'an existing member session is refused in untrusted codex mode');
 console.log('ok');
-process.exit(0);
+ws.close(); // let the process end by itself: process.exit() while a socket is closing trips a libuv assertion on Windows
+db.close();

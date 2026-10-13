@@ -27,6 +27,10 @@ assert(heard(o, 'codex sandbox is now workspace-write', mark));
 mark = o.got.length; say(guest, 'edit a file'); await wait();
 assert(!heard(o, 'got: gus: edit a file', mark), 'member cannot drive a writable codex');
 assert(heard(guest, 'owner and ops', 0), 'member is told why');
+say(guest, '/token'); await wait();
+const gtok = guest.got.find((e) => e.text?.startsWith('your token')).text.split(' ').pop();
+const denied = await fetch('http://127.0.0.1:3000/memory', { method: 'POST', headers: { authorization: 'Bearer ' + gtok }, body: JSON.stringify({ kind: 'note', text: 'inject' }) });
+assert.equal(denied.status, 403, 'a member cannot add memory while codex can write');
 say(o, '/op gus'); await wait();
 mark = o.got.length; say(guest, 'now allowed'); await wait();
 assert(heard(o, '(fake codex sandbox=workspace-write) got: gus: now allowed', mark), 'an op can drive it; new sandbox applies next turn');
@@ -49,4 +53,7 @@ assert(mem.startsWith('# Summary\nfake codex summary'), 'summary saved from code
 const db = new DatabaseSync(process.env.SANDWICH_DB, { readOnly: true });
 assert.equal(db.prepare("select v from kv where k = 'codex_thread'").get().v, 'fake-thread');
 console.log('ok');
+for (const w of [o, guest, late]) w.close(); // let sockets finish closing: process.exit() mid-close trips a libuv assertion on Windows
+db.close();
+await wait(400);
 process.exit(0);

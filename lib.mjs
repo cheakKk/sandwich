@@ -3,8 +3,10 @@ import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 // Pure helpers: the join recap shown to new users, and the safe wrapper for memory fed to the agent.
 
-const entries = (memory, kind) =>
-  memory.split('\n').filter((l) => l.includes(`] ${kind} (`)).map((l) => l.replace(/^- \[[^\]]*\] /, ''));
+const entries = (memory, kind) => {
+  const mine = new RegExp(`^- \\[[^\\]]*\\] ${kind} \\(`); // anchored, so a note that merely contains "] done (" is not an entry of that kind
+  return memory.split('\n').filter((l) => mine.test(l)).map((l) => l.replace(/^- \[[^\]]*\] /, ''));
+};
 
 // Quick review for someone joining: what got done, decided, handed off, and what the agent said last.
 // Deterministic on purpose (no model call, so joining never costs usage).
@@ -16,6 +18,8 @@ export function recap({ tools, lastAgent, memory }) {
   if (used) out.push(`Agent tool uses: ${used}`);
   const done = entries(memory, 'done').slice(-5);
   if (done.length) out.push('Completed:\n' + done.map((d) => `  ${d}`).join('\n'));
+  const tasks = entries(memory, 'task').slice(-3);
+  if (tasks.length) out.push('Open tasks:\n' + tasks.map((d) => `  ${d}`).join('\n'));
   const decisions = entries(memory, 'decision').slice(-3);
   if (decisions.length) out.push('Decisions:\n' + decisions.map((d) => `  ${d}`).join('\n'));
   const handoff = entries(memory, 'handoff').at(-1);
@@ -34,7 +38,7 @@ const split = (memory) => {
 // newest log entries fill whatever room is left under the cap.
 export function promptMemory(memory, max = 8000) {
   if (!memory.trim()) return '';
-  const { header, entries } = split(memory.replaceAll('project_memory', 'project-memory'));
+  const { header, entries } = split(memory.replace(/<\/?\s*project[_\s-]*memory\s*>/gi, '[tag removed]'));
   const kept = [];
   let room = max - header.length;
   for (const e of entries.toReversed()) {
@@ -50,18 +54,22 @@ export function promptMemory(memory, max = 8000) {
 // survive is decided here, so progress (done, decision, handoff) and open tasks can never be lost to a bad rewrite.
 // Only notes get trimmed, oldest first, but at least half the cap is always kept for them.
 const PROTECTED = /^- \[[^\]]*\] (done|decision|handoff|task) \(/;
-export function compactMemory(memory, summary, maxEntries = 100) {
+const MAX_PROTECTED = 150;
+export function compactMemory(memory, summary, maxEntries = 100, archive = []) {
   const { entries } = split(memory);
-  const protectedCount = entries.filter((e) => PROTECTED.test(e)).length;
-  let drop = entries.length - protectedCount - Math.max(Math.floor(maxEntries / 2), maxEntries - protectedCount);
-  const kept = entries.filter((e) => PROTECTED.test(e) || drop-- <= 0);
+  // Progress lines are never deleted: past MAX_PROTECTED the oldest move into `archive`, which the caller saves to a file.
+  let over = entries.filter((e) => PROTECTED.test(e)).length - MAX_PROTECTED;
+  const live = entries.filter((e) => !(PROTECTED.test(e) && over-- > 0 && archive.push(e)));
+  const protectedCount = live.filter((e) => PROTECTED.test(e)).length;
+  let drop = live.length - protectedCount - Math.max(Math.floor(maxEntries / 2), maxEntries - protectedCount);
+  const kept = live.filter((e) => PROTECTED.test(e) || drop-- <= 0);
   const safe = summary.slice(0, 2000).trim().split('\n').map((l) => (isEntry(l) ? ' ' + l : l)).join('\n');
   return `# Summary\n${safe}\n\n## Log\n${kept.join('\n')}\n`;
 }
 
-// The agent was told to answer "SUMMARY: ...". Tolerate markdown and a short preamble; reject empty.
+// The agent was told to start its reply with "SUMMARY:". Markdown around it is fine; anything else, or empty, is rejected.
 export function parseSummary(text) {
-  const m = text.match(/^[\s*_#>]*SUMMARY[*_\s]*:[*_\s]*([\s\S]*)$/im);
+  const m = text.match(/^[\s*_#>]*SUMMARY[*_\s]*:[*_\s]*([\s\S]*)$/i);
   return m?.[1].trim() || null;
 }
 
@@ -110,4 +118,12 @@ export function readScope(tool, input, cwd) {
 // The database holds session-token hashes, so it must not sit in the folder the agent works in.
 export function dbPath(cwd, env, home) {
   return env.SANDWICH_DB || join(home, '.sandwich', createHash('sha1').update(cwd).digest('hex').slice(0, 12) + '.db');
+}
+
+// Codex runs one turn at a time, so queued messages go in together, except a /save request, which must travel alone
+// so the reply to it is the summary. Takes from the front of the queue and returns what it took.
+const isSave = (m) => m.text.includes('Start your reply with "SUMMARY:"');
+export function takeBatch(queue) {
+  const i = queue.findIndex(isSave);
+  return queue.splice(0, i === -1 ? queue.length : i === 0 ? 1 : i);
 }

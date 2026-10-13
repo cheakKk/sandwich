@@ -6,13 +6,13 @@
 import http from 'node:http';
 import https from 'node:https';
 import { createHash, randomBytes } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
 import { fakeCodex, runCodex } from './codex.mjs';
-import { compactMemory, dbPath, originFrom, parseSummary, promptMemory, readScope, recap } from './lib.mjs';
+import { compactMemory, dbPath, originFrom, parseSummary, promptMemory, readScope, recap, takeBatch } from './lib.mjs';
 
 const PORT = Number(process.env.PORT) || 3000;
 const AGENT = process.env.AGENT === 'codex' ? 'codex' : 'claude'; // whose login/plan powers the session
@@ -20,6 +20,7 @@ const MEMORY = 'PROJECT_MEMORY.md';
 const MAX_TEXT = 4000; // one chat message
 const MAX_ENTRY = 2000; // one memory entry
 const MAX_MEMORY_BYTES = 1024 * 1024;
+const MEM_RATE = Number(process.env.MEM_RATE) || 200; // memory API writes per 10s per token
 const REPLAY = 300; // events replayed to a joiner
 
 // ponytail: log and keep serving rather than die on a bad frame; a supervisor/restart policy is the real fix.
@@ -118,21 +119,22 @@ const clearDriverIfGone = (key) => {
 };
 
 // Input queue: teammates' messages land here; the agent consumes them in order.
-const queue = [];
+const queue = []; // {text, op}: op = the sender was the owner or an op when they sent it
 let wake;
-let memory = existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : ''; // prepended to the first prompt: pick up where we left off
+let memoryPending = true; // the project memory is prepended to the first prompt, read fresh then: pick up where we left off
 // Busy flag, so teammates prompting at the same time can see the agent is mid-turn.
 let busy = false;
 const setBusy = (b) => { if (b !== busy) { busy = b; broadcast({ type: 'status', busy }); } };
-const push = (text) => {
+const push = (text, { op = true, withMemory = true } = {}) => {
   setBusy(true);
-  queue.push(memory ? `${promptMemory(memory)}\n\n${text}` : text);
-  memory = '';
+  const memory = withMemory && memoryPending && existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '';
+  memoryPending = false;
+  queue.push({ text: memory ? `${promptMemory(memory)}\n\n${text}` : text, op });
   wake?.();
 };
 async function* inputs() {
   for (;;) {
-    while (queue.length) yield { type: 'user', message: { role: 'user', content: queue.shift() }, parent_tool_use_id: null, session_id: '' };
+    while (queue.length) yield { type: 'user', message: { role: 'user', content: queue.shift().text }, parent_tool_use_id: null, session_id: '' };
     await new Promise((r) => (wake = r));
   }
 }
@@ -148,7 +150,11 @@ function agentSays(text) {
   savePending = false;
   clearTimeout(saveTimer);
   const old = existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '';
-  writeFileSync(MEMORY + '.tmp', compactMemory(old, summary)); // read-modify-write is synchronous, so no appends are lost
+  const archived = [];
+  const compacted = compactMemory(old, summary, 100, archived);
+  if (archived.length) appendFileSync(MEMORY.replace(/\.md$/, '.archive.md'), archived.join('\n') + '\n'); // old progress is moved, never deleted
+  if (old) copyFileSync(MEMORY, MEMORY + '.bak'); // hand-written notes outside the log are replaced by the summary, so keep one backup
+  writeFileSync(MEMORY + '.tmp', compacted); // read-modify-write is synchronous, so no appends are lost
   renameSync(MEMORY + '.tmp', MEMORY);
   emit('system', `${MEMORY} saved`);
 }
@@ -167,8 +173,18 @@ async function runCodexAgent() {
     threadId: db.prepare("select v from kv where k = 'codex_thread'").get()?.v ?? null,
     options: () => ({ sandboxMode: sandbox, approvalPolicy: 'never', workingDirectory: process.cwd(), networkAccessEnabled: false, skipGitRepoCheck: true }),
     next: async () => {
-      while (!queue.length) await new Promise((r) => (wake = r));
-      return queue.splice(0).join('\n\n');
+      for (;;) {
+        while (!queue.length) await new Promise((r) => (wake = r));
+        let batch = takeBatch(queue);
+        // a member's message queued before the owner allowed writes must not run with writes on (it was never approved for that)
+        if (codexWritable()) {
+          const kept = batch.filter((m) => m.op);
+          if (kept.length < batch.length) emit('system', 'dropped queued member messages: codex can write now, so only owner and ops can steer it');
+          batch = kept;
+        }
+        if (batch.length) return batch.map((m) => m.text).join('\n\n');
+        if (!queue.length) setBusy(false);
+      }
     },
     say: agentSays,
     tool: (line) => emit('agent', line),
@@ -295,7 +311,8 @@ function command(ws, c, line) {
         if (savePending) { savePending = false; emit('system', `${MEMORY} was not changed: the agent sent no summary. Try /save again.`); }
       }, 5 * 60 * 1000);
       const log = existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '';
-      return push(`Summarize this project for the team in under 150 words: goal, current state, open tasks, next step. Do not use any tools. Start your reply with "SUMMARY:".\n\n${promptMemory(log)}`);
+      memoryPending = false; // the prompt below already carries the memory
+      return push(`Summarize this project for the team in under 150 words: goal, current state, open tasks, next step. Do not use any tools. Start your reply with "SUMMARY:".\n\n${promptMemory(log)}`, { op: true, withMemory: false });
     }
     default: return tell(ws, `unknown command. ${HELP}`);
   }
@@ -310,7 +327,8 @@ function memoryApi(req, res) {
   if (!who) return out(401, 'session token required (/token in the chat)');
   if (req.method === 'GET') return out(200, existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '');
   if (req.method !== 'POST') return out(405, 'GET or POST');
-  if (limited('mem:' + hash(req.headers.authorization), 200)) return out(429, 'slow down');
+  if (codexWritable() && who.role !== 'owner' && who.role !== 'op') return out(403, 'codex can write files right now, so only the owner and ops can add memory');
+  if (limited('mem:' + hash(req.headers.authorization), MEM_RATE)) return out(429, 'slow down');
   let body = '';
   req.on('error', () => {});
   req.on('data', (d) => { body += d; if (body.length > 65536) { out(413, 'too large'); req.destroy(); } });
@@ -395,7 +413,7 @@ wss.on('connection', (ws, req) => {
       emit(c.name, m.text);
       if (codexWritable() && !isOp(c)) return tell(ws, 'codex can write files right now, so only the owner and ops can steer it. Your message is visible to everyone.');
       if (driver && driver.key !== c.key) return tell(ws, `${driver.name} is driving; your message is visible but not sent to the agent`);
-      push(`${c.name}: ${m.text}`);
+      push(`${c.name}: ${m.text.replace(/\s*[\r\n]+\s*/g, ' / ')}`, { op: isOp(c) }); // one line, so a message can't pose as another sender
     } catch (e) {
       console.error('message handler:', e);
     }
