@@ -19,12 +19,12 @@ function fakeCodex(turns) {
 
 // Runs the loop over the given inbox messages, recording what it reported.
 async function drive(codex, inbox, opts = () => ({ sandboxMode: 'read-only', approvalPolicy: 'never' }), threadId = null) {
-  const seen = { say: [], tool: [], busy: [], thread: [], error: [] };
+  const seen = { say: [], tool: [], busy: [], thread: [], error: [], usage: [] };
   await runCodex({
     codex, threadId, options: opts,
     next: async () => inbox.shift() ?? null,
     say: (t) => seen.say.push(t), tool: (t) => seen.tool.push(t), idle: () => seen.busy.push(false),
-    onThread: (id) => seen.thread.push(id), onError: (m) => seen.error.push(m),
+    onThread: (id) => seen.thread.push(id), onError: (m) => seen.error.push(m), onUsage: (u) => seen.usage.push(u),
   });
   return seen;
 }
@@ -167,4 +167,17 @@ test('runCodex: the same failure reported twice is shown once', async () => {
 test('describeItem: a malformed item is ignored, not thrown on', () => {
   assert.equal(describeItem({ type: 'item.started', item: { type: 'command_execution' } }), '[tool] shell ');
   assert.equal(describeItem({ type: 'item.completed', item: { type: 'file_change' } }), '[tool] edit ');
+});
+
+// --- usage reporting ---
+test('runCodex: each completed turn reports its token usage', async () => {
+  const usage = { input_tokens: 80, cached_input_tokens: 30, output_tokens: 20 };
+  const done = [{ type: 'thread.started', thread_id: 't1' }, say('hi'), { type: 'turn.completed', usage }];
+  const seen = await drive(fakeCodex([done, done]), ['a', 'b']);
+  assert.deepEqual(seen.usage, [usage, usage]);
+});
+
+test('runCodex: a failed turn reports no usage', async () => {
+  const seen = await drive(fakeCodex([[{ type: 'turn.failed', error: { message: 'x' } }]]), ['a']);
+  assert.deepEqual(seen.usage, []);
 });

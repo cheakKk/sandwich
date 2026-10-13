@@ -12,6 +12,7 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
 import { fakeCodex, runCodex } from './codex.mjs';
+import { claudeTurn, codexTurn, creditTurn, dayStart, formatUsage, overCap } from './usage.mjs';
 import { compactMemory, dbPath, originFrom, parseSummary, promptMemory, readScope, recap, takeBatch, ttlText } from './lib.mjs';
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -42,6 +43,16 @@ db.exec('create table if not exists events(id integer primary key, ts text, user
 db.exec('create table if not exists tokens(token text primary key, kind text, role text, name text, expires integer)');
 db.exec('create table if not exists kv(k text primary key, v text)');
 const insert = db.prepare('insert into events(ts,user,text) values(?,?,?)');
+// One row per finished agent turn, credited to whoever sent the message that started it.
+db.exec('create table if not exists usage(id integer primary key, ts integer, key text, name text, kind text, tokens_in integer, tokens_out integer, cache_read integer, cost_usd real)');
+db.exec('create index if not exists usage_key on usage(key, ts)');
+db.prepare('delete from usage where ts < ?').run(Date.now() - 90 * 86400000); // keep 90 days
+const addUsage = db.prepare('insert into usage(ts,key,name,kind,tokens_in,tokens_out,cache_read,cost_usd) values(?,?,?,?,?,?,?,?)');
+const tokensToday = db.prepare('select coalesce(sum(tokens_in + tokens_out), 0) as n from usage where key = ? and ts >= ?');
+const usageRows = db.prepare(`select key, (select name from usage u2 where u2.key = usage.key order by id desc limit 1) as name, count(*) as turns,
+  sum(tokens_in) as tokensIn, sum(tokens_out) as tokensOut, sum(cache_read) as cacheRead, sum(cost_usd) as costUsd
+  from usage where ts >= ? group by key order by sum(tokens_in + tokens_out) desc`);
+const getKv = (k) => db.prepare('select v from kv where k = ?').get(k)?.v;
 // Joining reads a bounded slice and two small aggregates; the table itself is capped at about EVENT_KEEP rows by pruning.
 db.exec('create index if not exists events_user on events(user, id)');
 const recent = db.prepare('select ts,user,text from (select id,ts,user,text from events order by id desc limit ?) order by id');
@@ -155,16 +166,37 @@ let memoryPending = true; // the project memory is prepended to the first prompt
 // Busy flag, so teammates prompting at the same time can see the agent is mid-turn.
 let busy = false;
 const setBusy = (b) => { if (b !== busy) { busy = b; broadcast({ type: 'status', busy }); } };
-const push = (text, { op = true, withMemory = true } = {}) => {
+const SYSTEM = { key: 'system', name: 'system' };
+const push = (text, { op = true, withMemory = true, by = SYSTEM } = {}) => {
   setBusy(true);
   const memory = withMemory && memoryPending && existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '';
   memoryPending = false;
-  queue.push({ text: memory ? `${promptMemory(memory)}\n\n${text}` : text, op });
+  queue.push({ text: memory ? `${promptMemory(memory)}\n\n${text}` : text, op, by });
   wake?.();
 };
+
+// Usage: who started which turn. Claude takes messages one by one and may fold several into one turn, so senders are
+// remembered as they go in and the next result is credited to the first of them (creditTurn has the rules).
+let senders = [];
+let claudeTotal = 0; // Claude's cost figure is a running total for the session; a turn's cost is the change
+const recordUsage = (by, kind, t) => {
+  if (!(t.tokensIn || t.tokensOut || t.costUsd)) return; // crash and startup results carry zeros: nothing to record
+  addUsage.run(Date.now(), by.key, by.name, kind, t.tokensIn, t.tokensOut, t.cacheRead, t.costUsd);
+};
+function onClaudeResult(m) {
+  const t = claudeTurn(m, claudeTotal);
+  claudeTotal = t.total;
+  const { by, rest } = creditTurn(senders, m.queued_turn_count);
+  senders = rest;
+  recordUsage(by, 'claude', t);
+}
 async function* inputs() {
   for (;;) {
-    while (queue.length) yield { type: 'user', message: { role: 'user', content: queue.shift().text }, parent_tool_use_id: null, session_id: '' };
+    while (queue.length) {
+      const item = queue.shift();
+      senders.push(item.by);
+      yield { type: 'user', message: { role: 'user', content: item.text }, parent_tool_use_id: null, session_id: '' };
+    }
     await new Promise((r) => (wake = r));
   }
 }
@@ -196,6 +228,7 @@ let sandbox = 'read-only';
 // approval, so members are only invited when the owner opts in with CODEX_TRUST_MEMBERS=1.
 const TRUST_MEMBERS = process.env.CODEX_TRUST_MEMBERS === '1';
 const codexWritable = () => AGENT === 'codex' && sandbox === 'workspace-write';
+let codexBy = SYSTEM; // a Codex batch can hold several people's messages; the turn is credited to the first
 async function runCodexAgent() {
   const codex = process.env.FAKE_CODEX ? fakeCodex() : new (await import('@openai/codex-sdk')).Codex(process.env.CODEX_API_KEY ? { apiKey: process.env.CODEX_API_KEY } : {});
   await runCodex({
@@ -212,10 +245,11 @@ async function runCodexAgent() {
           if (kept.length < batch.length) emit('system', 'dropped queued member messages: codex can write now, so only owner and ops can steer it');
           batch = kept;
         }
-        if (batch.length) return batch.map((m) => m.text).join('\n\n');
+        if (batch.length) { codexBy = batch[0].by; return batch.map((m) => m.text).join('\n\n'); }
         if (!queue.length) setBusy(false);
       }
     },
+    onUsage: (u) => recordUsage(codexBy, 'codex', codexTurn(u)),
     say: agentSays,
     tool: (line) => emit('agent', line),
     idle: () => { if (!queue.length) setBusy(false); },
@@ -224,6 +258,7 @@ async function runCodexAgent() {
   });
 }
 
+let fakeTotal = 0;
 async function runAgent() {
   if (AGENT === 'codex') return runCodexAgent();
   if (process.env.FAKE) {
@@ -236,6 +271,8 @@ async function runAgent() {
         const r = await askOps('Bash', { command: c.split('run:')[1].trim() });
         emit('agent', `(fake) approval result: ${r.behavior}`);
       }
+      // the same code path a real result takes: 100 tokens in, 50 out, one cent per turn (cumulative, like the real SDK)
+      onClaudeResult({ type: 'result', total_cost_usd: (fakeTotal += 0.01), usage: { input_tokens: 100, output_tokens: 50 }, queued_turn_count: queue.length });
       if (!queue.length) setBusy(false);
     }
     return;
@@ -264,6 +301,7 @@ async function runAgent() {
     },
   });
   for await (const m of q) {
+    if (m.type === 'result') onClaudeResult(m);
     if (m.type === 'result' && m.is_error) emit('system', `agent error: ${m.subtype ?? 'unknown'}`);
     if (m.type === 'result' && !queue.length) setBusy(false);
     if (m.type !== 'assistant') continue;
@@ -281,10 +319,10 @@ const removeMember = (key) => {
   clearDriverIfGone(key, 0);
 };
 
-const HELP = '/who /members /token /handoff [name] /save | ops: /invite /kick <name> /revoke <name> | owner: /op <name> /deop <name> /allow <Tool> /deny <Tool> /sandbox <read-only|write> (codex)';
+const HELP = '/who /members /usage [today] /token /handoff [name] /save | ops: /invite /kick <name> /revoke <name> | owner: /op <name> /deop <name> /cap <name> <tokens|off> /allow <Tool> /deny <Tool> /sandbox <read-only|write> (codex)';
 
 function command(ws, c, line) {
-  const [cmd, arg] = line.slice(1).split(/\s+/);
+  const [cmd, arg, arg2] = line.slice(1).split(/\s+/);
   const need = (ok) => ok || (tell(ws, `/${cmd}: you don't have permission`), false);
   const isDriver = driver?.key === c.key;
   switch (cmd) {
@@ -313,6 +351,21 @@ function command(ws, c, line) {
       if (!row || (row.role === 'op' && c.role !== 'owner')) return tell(ws, `no revocable member named ${arg}`);
       removeMember(row.token);
       return emit('system', `${row.name} was revoked by ${c.name}`);
+    }
+    case 'usage': { // owner and ops see everyone; members see themselves. "/usage today" counts since 00:00 UTC.
+      const since = arg === 'today' ? dayStart(Date.now()) : 0;
+      const rows = usageRows.all(since).filter((r) => isOp(c) || r.key === c.key).map((r) => ({ ...r, costUsd: r.costUsd }));
+      return tell(ws, formatUsage(rows));
+    }
+    case 'cap': { // a soft daily token cap for one member: checked before each of their messages is sent to the agent
+      if (!need(c.role === 'owner')) return;
+      const row = arg && db.prepare("select token from tokens where kind = 'session' and lower(name) = lower(?)").get(arg);
+      if (arg && !row) return tell(ws, `no member named ${arg}`);
+      const n = Number(arg2);
+      if (!row || !(arg2 === 'off' || (Number.isInteger(n) && n > 0))) return tell(ws, 'usage: /cap <name> <tokens per day | off>');
+      if (arg2 === 'off') db.prepare('delete from kv where k = ?').run('cap:' + row.token);
+      else db.prepare('insert or replace into kv(k, v) values(?, ?)').run('cap:' + row.token, String(n));
+      return emit('system', arg2 === 'off' ? `${arg}'s usage cap was removed by ${c.name}` : `${arg} is capped at ${n} tokens per day (set by ${c.name}); a turn already running can finish`);
     }
     case 'members': {
       const rows = db.prepare("select name, role from tokens where kind = 'session' order by name").all();
@@ -362,7 +415,7 @@ function command(ws, c, line) {
       }, 5 * 60 * 1000);
       const log = existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '';
       memoryPending = false; // the prompt below already carries the memory
-      return push(`Summarize this project for the team in under 150 words: goal, current state, open tasks, next step. Do not use any tools. Start your reply with "SUMMARY:".\n\n${promptMemory(log)}`, { op: true, withMemory: false });
+      return push(`Summarize this project for the team in under 150 words: goal, current state, open tasks, next step. Do not use any tools. Start your reply with "SUMMARY:".\n\n${promptMemory(log)}`, { op: true, withMemory: false, by: { key: c.key, name: c.name } });
     }
     default: return tell(ws, `unknown command. ${HELP}`);
   }
@@ -486,7 +539,9 @@ wss.on('connection', (ws, req) => {
       emit(c.name, m.text);
       if (codexWritable() && !isOp(c)) return tell(ws, 'codex can write files right now, so only the owner and ops can steer it. Your message is visible to everyone.');
       if (driver && driver.key !== c.key) return tell(ws, `${driver.name} is driving; your message is visible but not sent to the agent`);
-      push(`${c.name}: ${m.text.replace(/\s*[\r\n]+\s*/g, ' / ')}`, { op: isOp(c) }); // one line, so a message can't pose as another sender
+      const cap = c.role === 'owner' ? null : Number(getKv('cap:' + c.key)) || null;
+      if (overCap(tokensToday.get(c.key, dayStart(Date.now())).n, cap)) return tell(ws, `you have reached your daily usage cap (${cap} tokens). Your message is visible but was not sent to the agent; the owner can raise it.`);
+      push(`${c.name}: ${m.text.replace(/\s*[\r\n]+\s*/g, ' / ')}`, { op: isOp(c), by: { key: c.key, name: c.name } }); // one line, so a message can't pose as another sender
     } catch (e) {
       console.error('message handler:', e);
     }

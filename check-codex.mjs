@@ -44,6 +44,15 @@ say(o, '/invite'); await wait();
 const late = await open(o.got.filter((e) => e.text?.startsWith('invite link')).at(-1).text.match(/#(\w+)/)[1], 'lia'); await wait();
 assert(heard(late, 'shell x'), 'recap counts codex tool use');
 
+// usage: codex reports tokens (cached input split out) and no dollar figure
+{
+  const mark = o.got.length;
+  say(o, '/usage'); await wait();
+  const text = o.got.slice(mark).filter((e) => e.user === 'system').map((e) => e.text).join('\n');
+  assert.match(text, /ann: \d+ turns?, \d+ in \/ \d+ out \(\d+k? cached\)/, text);
+  assert(!text.includes('about $'), 'codex has no dollar estimate: ' + text);
+}
+
 // /save works the same way as with Claude
 say(o, '/save'); await wait(500);
 const mem = await (await fetch('http://127.0.0.1:3000/memory', { headers: { authorization: 'Bearer ' + owner } })).text();

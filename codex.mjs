@@ -26,6 +26,7 @@ async function runTurn(thread, text, h) {
     const { events } = await thread.runStreamed(text);
     for await (const ev of events) {
       if (ev.type === 'thread.started') h.onThread(ev.thread_id);
+      else if (ev.type === 'turn.completed') h.onUsage?.(ev.usage);
       else if (ev.type === 'turn.failed') fail(`codex turn failed: ${ev.error.message}`, ev.error.message);
       else if (ev.type === 'error') fail(`codex error: ${ev.message}`, ev.message);
       else if (ev.item?.type === 'error') fail(`codex: ${ev.item.message}`, ev.item.message);
@@ -49,9 +50,9 @@ const GONE = /not found|no such|does not exist|no rollout|unknown (session|threa
 // A failed turn is reported and the loop carries on, so one bad turn never ends the session.
 // A saved thread that no longer exists (cleaned up, other login) is replaced with a new one, once, and only when
 // the failed attempt did nothing yet, so a half-done command is never run twice.
-export async function runCodex({ codex, threadId, options, next, say, tool, idle, onThread, onError }) {
+export async function runCodex({ codex, threadId, options, next, say, tool, idle, onThread, onError, onUsage }) {
   let id = threadId;
-  const handlers = { say, tool, onThread: (t) => onThread((id = t)), onError };
+  const handlers = { say, tool, onThread: (t) => onThread((id = t)), onError, onUsage };
   for (let text = await next(); text !== null; text = await next()) {
     const errors = [];
     const resumed = !!id;
@@ -79,7 +80,7 @@ export const fakeCodex = () => {
         yield { type: 'item.started', item: { type: 'command_execution', command: 'echo hi', aggregated_output: '', status: 'in_progress' } };
         const reply = input.includes('Start your reply with "SUMMARY:"') ? 'SUMMARY: fake codex summary' : `(fake codex sandbox=${opts.sandboxMode}) got: ${input.slice(0, 100)}`;
         yield { type: 'item.completed', item: { type: 'agent_message', text: reply } };
-        yield { type: 'turn.completed', usage: {} };
+        yield { type: 'turn.completed', usage: { input_tokens: 80, cached_input_tokens: 30, output_tokens: 20 } };
       })(),
     }),
   });

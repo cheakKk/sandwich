@@ -15,9 +15,11 @@ The console prints the owner link. Everything else happens in the chat box (`/he
 
 | Who | Commands |
 |---|---|
-| everyone | `/who` `/members` `/token` `/handoff [name]` (driver or op) `/save` (driver or op) |
-| owner and ops | `/invite` `/kick <name>` `/revoke <name>` (also works on offline members) |
-| owner | `/op <name>` `/deop <name>` `/allow <Tool>` `/deny <Tool>` `/sandbox <read-only\|write>` (Codex) |
+| everyone | `/who` `/members` `/usage [today]` (your own usage) `/token` `/handoff [name]` (driver or op) `/save` (driver or op) |
+| owner and ops | `/invite` `/kick <name>` `/revoke <name>` (also works on offline members); `/usage` shows everyone |
+| owner | `/op <name>` `/deop <name>` `/cap <name> <tokens per day\|off>` `/allow <Tool>` `/deny <Tool>` `/sandbox <read-only\|write>` (Codex) |
+
+Usage: every finished agent turn is recorded (tokens in and out, cached tokens, and an estimated dollar figure for Claude) and credited to whoever sent the message that started it. If several people's messages are folded into one turn, the first sender gets it. `/cap` is a soft daily limit per member (UTC day): their messages stay visible in the chat but stop reaching the agent once the day's tokens pass the cap; a turn already running can finish. Dollar figures are the SDK's estimates, not a bill, and Codex reports tokens only. The first turn of a session costs the most, because the agent's instructions are cached then (about 21k tokens in a real test).
 
 Invites are single-use and expire (24h). Sessions expire after 30 days without connecting. In Claude mode every tool except Read, Glob and Grep waits for an op to approve it; Read, Glob and Grep only see visible files inside the project folder.
 
@@ -45,7 +47,7 @@ QM is a company-wide system: isolated workspaces per person and per Slack room, 
 ## Known limits
 
 - Codex mode has no per-command approval (the SDK is non-interactive); the sandbox is the only guardrail and Codex may read files outside the project. Per-command approval needs Codex's `app-server` protocol.
-- Whose plan pays: the host's own Claude or Codex login. Anthropic's terms do not allow routing other people's use through a subscription in a product, so a paid service needs bring-your-own API keys (or Anthropic's written OK). Not solved yet. There are no per-member usage budgets or cost ledger yet.
+- Whose plan pays: the host's own Claude or Codex login. Anthropic's terms do not allow routing other people's use through a subscription in a product, so a paid service needs bring-your-own API keys (or Anthropic's written OK). Not solved yet. Usage is now recorded and capped per member, but nothing splits or collects money.
 - Session tokens travel in the page URL and the WebSocket URL, so a tunnel or proxy log can record them.
 - Approvals are only as good as the op reading them: once an op allows a shell command, it runs with the host's rights.
 

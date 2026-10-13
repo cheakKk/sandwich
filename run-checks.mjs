@@ -39,6 +39,7 @@ async function suite(env, files) {
 
 await suite({ FAKE: '1' }, ['check.mjs', 'check-memory.mjs', 'check-abuse.mjs']);
 await suite({ FAKE: '1' }, ['check-ui.mjs']);
+await suite({ FAKE: '1' }, ['check-usage.mjs']);
 await suite({ AGENT: 'codex', FAKE_CODEX: '1', CODEX_TRUST_MEMBERS: '1' }, ['check-codex.mjs']);
 await suite({ AGENT: 'codex', FAKE_CODEX: '1' }, ['check-codex-untrusted.mjs']);
 await suite({ FAKE: '1' }, ['check-die.mjs']);

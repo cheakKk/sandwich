@@ -24,7 +24,7 @@ Sandwich lets invited people steer an AI agent that runs as the host's own user 
 - **Prompt injection is not solved.** Framing memory as data lowers the risk; it is not a guarantee. A teammate's chat message or memory note can still try to steer the agent.
 - **No separation between members.** The owner can read the whole chat database and memory; there is no per-member privacy. Chat and memory are not encrypted at rest (the database holds only token hashes as secrets).
 - **Transport.** Plain HTTP is for localhost. Beyond that you need TLS (a tunnel, a host, or `SANDWICH_CERT`/`SANDWICH_KEY`). Session tokens appear in URLs, so proxy or tunnel logs can record them.
-- **No per-member spend limits.** Members share the host's login. `SANDWICH_MAX_BUDGET_USD` caps total API spend in Claude mode; subscription logins have no dollar cap.
+- **Spend limits are soft.** Members share the host's login. `/usage` records every turn per member and `/cap` stops a member's messages after a daily token limit (checked before each message, so one turn can overshoot). `SANDWICH_MAX_BUDGET_USD` caps total API spend in Claude mode; subscription logins have no dollar cap.
 - **Not hardened for strangers.** Rate limits and caps reduce abuse by one invited member; this is not a multi-tenant public service.
 - Owner token lives in memory and the console; restarting the server rotates it.
 
