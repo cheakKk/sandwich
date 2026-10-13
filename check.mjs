@@ -12,6 +12,13 @@ const sessionOf = (ws) => ws.got.find((m) => m.type === 'session')?.token;
 const bad = await open('nope', 'x'); await wait();
 assert.equal(bad.code, 4401, 'no invite, no entry');
 
+// behind a TLS proxy (tunnel, Railway, ...) invite links must be https on the public host
+const px = new WebSocket('ws://127.0.0.1:3000/?t=' + owner + '&n=px', { headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'sandwich.example' } });
+px.got = []; px.on('message', (m) => px.got.push(JSON.parse(m)));
+await new Promise((r) => px.on('open', r)); say(px, '/invite'); await wait();
+assert(px.got.some((e) => e.text?.startsWith('invite link') && e.text.includes('https://sandwich.example/#')), 'invite link uses forwarded https host');
+px.close();
+
 const o = await open(owner, 'ann');
 const b = await open(await invite(o), 'bob'), c = await open(await invite(o), 'cat');
 await wait();

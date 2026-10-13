@@ -4,6 +4,7 @@
 // Commands (type in the chat box): /invite /kick <name> /op <name> /deop <name> /allow <Tool> /deny <Tool>
 //                                  /handoff [name] /save /who /token /help
 import http from 'node:http';
+import https from 'node:https';
 import { randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
@@ -136,7 +137,7 @@ function command(ws, c, line) {
       if (!need(isOp(c))) return;
       const t = token();
       putToken.run(t, 'invite', 'member', null, Date.now() + INVITE_TTL_MS);
-      return tell(ws, `invite link (single-use, ${Math.round(INVITE_TTL_MS / 3600000)}h): http://${c.host}/#${t}`);
+      return tell(ws, `invite link (single-use, ${Math.round(INVITE_TTL_MS / 3600000)}h): ${c.origin}/#${t}`);
     }
     case 'token': return tell(ws, `your token for the CLI/MCP (SANDWICH_TOKEN): ${c.token}`);
     case 'kick': {
@@ -199,7 +200,14 @@ function memoryApi(req, res) {
     out(200, 'ok');
   });
 }
-const server = http.createServer((req, res) => (req.url.startsWith('/memory') ? memoryApi(req, res) : res.setHeader('content-type', 'text/html').end(page)));
+// HTTPS: set SANDWICH_CERT and SANDWICH_KEY (PEM file paths) to terminate TLS here, or put a TLS proxy/tunnel
+// in front (it sends x-forwarded-proto/host, which invite links follow). Without either, plain http is localhost-only.
+const tls = process.env.SANDWICH_CERT && process.env.SANDWICH_KEY;
+const handler = (req, res) => (req.url.startsWith('/memory') ? memoryApi(req, res) : res.setHeader('content-type', 'text/html').end(page));
+const server = tls
+  ? https.createServer({ cert: readFileSync(process.env.SANDWICH_CERT), key: readFileSync(process.env.SANDWICH_KEY) }, handler)
+  : http.createServer(handler);
+const originOf = (req) => `${req.headers['x-forwarded-proto'] || (tls ? 'https' : 'http')}://${req.headers['x-forwarded-host'] || req.headers.host}`;
 const wss = new WebSocketServer({ server });
 
 wss.on('connection', (ws, req) => {
@@ -219,7 +227,7 @@ wss.on('connection', (ws, req) => {
   }
   if (!who) return ws.close(4401, 'invite required');
   const { role, name } = who;
-  const c = { name, role, token: t, host: req.headers.host };
+  const c = { name, role, token: t, origin: originOf(req) };
   clients.set(ws, c);
   send(ws, { type: 'role', role });
   const history = db.prepare('select ts,user,text from events order by id').all();
@@ -247,6 +255,6 @@ wss.on('connection', (ws, req) => {
 
 runAgent().catch((e) => emit('system', `agent died: ${e.message}`));
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`owner link: http://127.0.0.1:${PORT}/#${ownerToken}`);
+  console.log(`owner link: ${tls ? 'https' : 'http'}://127.0.0.1:${PORT}/#${ownerToken}`);
   if (process.env.EXPOSE_TOKEN) console.log(`HOST_TOKEN=${ownerToken}`);
 });

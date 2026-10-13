@@ -22,7 +22,7 @@
   const t = location.hash.slice(1);
   const me = localStorage.getItem('u') || prompt('Your name') || 'guest';
   localStorage.setItem('u', me);
-  const ws = new WebSocket('ws://' + location.host + '/?t=' + encodeURIComponent(t) + '&n=' + encodeURIComponent(me));
+  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/?t=' + encodeURIComponent(t) + '&n=' + encodeURIComponent(me));
   const add = (el) => { log.append(el); log.scrollTop = log.scrollHeight; };
   const asks = {};
   ws.onclose = (e) => {
