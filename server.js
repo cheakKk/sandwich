@@ -5,10 +5,10 @@
 //                                  /handoff [name] /save /who /token /help
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
-import { promptMemory, recap } from './lib.mjs';
+import { compactMemory, promptMemory, recap } from './lib.mjs';
 
 const PORT = 3000;
 const MEMORY = 'PROJECT_MEMORY.md';
@@ -76,11 +76,24 @@ async function* inputs() {
   }
 }
 
+// /save: the agent only writes the summary; compactMemory (lib.mjs) decides which log lines survive.
+let savePending = false;
+function agentSays(text) {
+  emit('agent', text);
+  if (savePending && text.startsWith('SUMMARY:')) {
+    savePending = false;
+    const old = existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '';
+    writeFileSync(MEMORY, compactMemory(old, text.slice(8))); // read-modify-write is synchronous, so no appends are lost
+    emit('system', `${MEMORY} saved`);
+  }
+}
+
 async function runAgent() {
   if (process.env.FAKE) {
     for await (const m of inputs()) {
       const c = m.message.content;
-      emit('agent', `(fake) got: ${c}`);
+      emit('agent', `(fake) got: ${c.slice(0, 200)}`);
+      if (c.includes('Start your reply with "SUMMARY:"')) agentSays('SUMMARY: fake summary line');
       if (c.includes('run:')) {
         const r = await askOps('Bash', { command: c.split('run:')[1].trim() });
         emit('agent', `(fake) approval result: ${r.behavior}`);
@@ -104,7 +117,7 @@ async function runAgent() {
   for await (const m of q) {
     if (m.type !== 'assistant') continue;
     for (const b of m.message.content) {
-      if (b.type === 'text') emit('agent', b.text);
+      if (b.type === 'text') agentSays(b.text);
       else if (b.type === 'tool_use') emit('agent', `[tool] ${b.name} ${JSON.stringify(b.input).slice(0, 120)}`);
     }
   }
@@ -156,8 +169,10 @@ function command(ws, c, line) {
     }
     case 'save': {
       if (!need(isOp(c) || c.name === driver)) return;
-      emit('system', `${c.name} asked the agent to update ${MEMORY}`);
-      return push(`Update the file ${MEMORY} in the current directory. Put a short summary at the top (goal, current state, open tasks, next step). Keep every existing line that starts with "- [" exactly as it is, below the summary. If the entry lines exceed about 100, drop the oldest note/task lines but keep every done, decision and handoff line.`);
+      emit('system', `${c.name} asked the agent to summarize for ${MEMORY}`);
+      savePending = true;
+      const log = existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '';
+      return push(`Summarize this project for the team in under 150 words: goal, current state, open tasks, next step. Do not use any tools. Start your reply with "SUMMARY:".\n\n${promptMemory(log)}`);
     }
     default: return tell(ws, `unknown command. ${HELP}`);
   }

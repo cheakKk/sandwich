@@ -3,6 +3,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert';
+import WebSocket from 'ws';
 const env = { ...process.env, SANDWICH_TOKEN: process.env.HOST_TOKEN, SANDWICH_NAME: 'bob' };
 execFileSync('node', ['client.mjs', 'add', 'decision', 'use passkeys'], { env });
 const c = new Client({ name: 't', version: '0' });
@@ -13,4 +14,19 @@ assert(got.includes('decision (bob): use passkeys') && got.includes('handoff (bo
 const cli = execFileSync('node', ['client.mjs', 'get'], { env }).toString();
 assert(cli.includes('login half done'));
 const bad = await fetch('http://127.0.0.1:3000/memory'); assert.equal(bad.status, 401);
+
+// /save: the agent writes only a summary; the server keeps every done/decision/handoff and caps the rest
+const H = { authorization: 'Bearer ' + process.env.HOST_TOKEN, 'content-type': 'application/json' };
+const post = (kind, text) => fetch('http://127.0.0.1:3000/memory', { method: 'POST', headers: H, body: JSON.stringify({ kind, text }) });
+for (let i = 0; i < 110; i++) await post('note', 'filler' + i);
+await post('done', 'login form shipped');
+const ws = new WebSocket('ws://127.0.0.1:3000/?t=' + process.env.HOST_TOKEN + '&n=ann');
+await new Promise((r) => ws.on('open', r));
+ws.send(JSON.stringify({ text: '/save' }));
+await new Promise((r) => setTimeout(r, 800));
+const saved = await (await fetch('http://127.0.0.1:3000/memory', { headers: H })).text();
+assert(saved.startsWith('# Summary\nfake summary line'), 'summary written at top');
+assert(saved.includes('login form shipped') && saved.includes('decision (bob): use passkeys') && saved.includes('handoff (bob): login half done'), 'progress entries survive /save');
+const n = saved.split('\n').filter((l) => l.startsWith('- [')).length;
+assert(n <= 100 && saved.includes('filler109') && !saved.includes('filler0 '), 'old notes trimmed, newest kept: ' + n);
 console.log('ok'); process.exit(0);
