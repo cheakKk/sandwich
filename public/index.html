@@ -1,0 +1,56 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sandwich</title>
+<style>
+  body { font: 16px/1.4 Georgia, serif; background: #f2e6c9; color: #1b1b1b; margin: 0; display: flex; flex-direction: column; height: 100vh; }
+  #log { flex: 1; overflow: auto; padding: 16px; }
+  .ev { margin: 0 0 10px; white-space: pre-wrap; }
+  .ev b { background: #e8412c; color: #fff; padding: 0 6px; margin-right: 8px; }
+  .ev.agent b { background: #1b1b1b; }
+  .ev.system b { background: #7a7a7a; }
+  .ask { border: 3px solid #e8412c; padding: 8px; margin: 0 0 10px; }
+  form { display: flex; gap: 8px; padding: 12px; background: #1b1b1b; }
+  input { font: inherit; padding: 8px; border: 0; }
+  #text { flex: 1; }
+  button { font: inherit; background: #e8412c; color: #fff; border: 0; padding: 8px 16px; cursor: pointer; }
+</style>
+<div id="log"></div>
+<form id="f"><input id="text" placeholder="steer the agent, or /help" autofocus><button>Send</button></form>
+<script>
+  const log = document.getElementById('log');
+  const t = location.hash.slice(1);
+  const me = localStorage.getItem('u') || prompt('Your name') || 'guest';
+  localStorage.setItem('u', me);
+  const ws = new WebSocket('ws://' + location.host + '/?t=' + encodeURIComponent(t) + '&n=' + encodeURIComponent(me));
+  const add = (el) => { log.append(el); log.scrollTop = log.scrollHeight; };
+  const asks = {};
+  ws.onclose = (e) => {
+    if (e.code === 4401) log.textContent = 'Sandwich is invite only. Invite links work once and expire. Ask the owner for a new one.';
+    if (e.code === 4403) log.textContent = 'You were removed from this session.';
+  };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'role') document.title = 'Sandwich (' + m.role + ')';
+    else if (m.type === 'session') history.replaceState(null, '', '#' + m.token); // the invite is burned; keep our own session so refresh works
+    else if (m.type === 'approval') {
+      const d = document.createElement('div'); d.className = 'ask'; asks[m.id] = d;
+      d.append('Agent wants to use ' + m.tool + ': ' + JSON.stringify(m.input).slice(0, 300) + ' ');
+      for (const ok of [true, false]) {
+        const b = document.createElement('button'); b.textContent = ok ? 'Allow' : 'Deny';
+        b.onclick = () => ws.send(JSON.stringify({ type: 'decide', id: m.id, allow: ok }));
+        d.append(b);
+      }
+      add(d);
+    } else if (m.type === 'resolved') { asks[m.id]?.remove(); }
+    else {
+      const d = document.createElement('div'); d.className = 'ev ' + m.user;
+      const b = document.createElement('b'); b.textContent = m.user;
+      d.append(b, m.text); add(d);
+    }
+  };
+  f.onsubmit = (e) => {
+    e.preventDefault();
+    ws.send(JSON.stringify({ text: text.value })); text.value = '';
+  };
+</script>
