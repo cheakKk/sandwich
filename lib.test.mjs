@@ -238,3 +238,19 @@ test('takeBatch: queued messages go together, but a save request always travels 
   assert.deepEqual(takeBatch(q).map((m) => m.text), ['c']);
   assert.deepEqual(takeBatch(q), []);
 });
+
+// --- batch 4 ---
+import { ttlText } from './lib.mjs';
+
+test('ttlText: short invite lifetimes are not shown as 0h', () => {
+  assert.equal(ttlText(24 * 3600 * 1000), '24h');
+  assert.equal(ttlText(90 * 60 * 1000), '2h');
+  assert.equal(ttlText(1500), '1min');
+  assert.equal(ttlText(10 * 60 * 1000), '10min');
+});
+
+test('originFrom: a request with no Host header does not produce http://undefined', () => {
+  assert.equal(originFrom({}, false), 'http://localhost');
+  assert.equal(originFrom({ host: '[::1]:3000' }, false), 'http://[::1]:3000');
+  assert.equal(originFrom({ host: 'x', 'x-forwarded-host': '[::1]:3000' }, true), 'https://[::1]:3000');
+});

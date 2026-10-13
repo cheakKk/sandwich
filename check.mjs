@@ -43,7 +43,7 @@ assert(nameOf(fake) !== 'owner' && nameOf(o) === 'ann', 'member cannot be called
 [twin, poser, fake].forEach((w) => w.close());
 
 // joiners get a quick review of what happened so far
-assert(heard(b, 'This session is new') || heard(b, 'Quick review'), 'joiner gets a recap');
+assert(heard(b, 'This session is new'), 'the first joiner is told the session is new');
 
 b.got.length = 0; say(b, 'use passkeys'); await wait();
 assert(o.got.some((e) => e.user === 'agent' && e.text.includes('bob: use passkeys')), 'member steers agent');
@@ -55,7 +55,7 @@ b.send(JSON.stringify({ type: 'typing' })); await wait();
 assert(o.got.some((m) => m.type === 'typing' && m.name === 'bob'), 'others see who is typing');
 assert(!b.got.some((m) => m.type === 'typing'), 'you are not told you are typing');
 const late = await open(await invite(o), 'fay'); await wait();
-assert(heard(late, 'Quick review'), 'later joiner sees what was completed');
+assert(heard(late, 'Quick review') && heard(late, 'Last agent message'), 'a later joiner gets a recap including what the agent said last');
 
 // approvals: plain member can't see or resolve; /op promotes
 say(b, 'run: rm x'); await wait();

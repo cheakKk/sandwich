@@ -78,8 +78,11 @@ export function originFrom(headers, tls) {
   const first = (v) => String(v ?? '').split(',')[0].trim();
   const proto = first(headers['x-forwarded-proto']);
   const host = first(headers['x-forwarded-host']);
-  return `${/^https?$/.test(proto) ? proto : tls ? 'https' : 'http'}://${/^[\w.:[\]-]+$/.test(host) ? host : headers.host}`;
+  return `${/^https?$/.test(proto) ? proto : tls ? 'https' : 'http'}://${/^[\w.:[\]-]+$/.test(host) ? host : headers.host || 'localhost'}`;
 }
+
+// "24h", or "10min" for short lifetimes (used in tests and invite text).
+export const ttlText = (ms) => (ms >= 3600000 ? `${Math.round(ms / 3600000)}h` : `${Math.max(1, Math.round(ms / 60000))}min`);
 
 // Paths the agent should never read without an op saying yes: databases, keys, tokens, this app's own data.
 export function sensitive(input) {

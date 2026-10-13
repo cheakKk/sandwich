@@ -12,7 +12,7 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
 import { fakeCodex, runCodex } from './codex.mjs';
-import { compactMemory, dbPath, originFrom, parseSummary, promptMemory, readScope, recap, takeBatch } from './lib.mjs';
+import { compactMemory, dbPath, originFrom, parseSummary, promptMemory, readScope, recap, takeBatch, ttlText } from './lib.mjs';
 
 const PORT = Number(process.env.PORT) || 3000;
 const AGENT = process.env.AGENT === 'codex' ? 'codex' : 'claude'; // whose login/plan powers the session
@@ -37,11 +37,12 @@ process.on('unhandledRejection', (e) => console.error('unhandled:', e));
 const DB_FILE = dbPath(process.cwd(), process.env, homedir());
 mkdirSync(dirname(DB_FILE), { recursive: true });
 const db = new DatabaseSync(DB_FILE);
+db.exec('pragma journal_mode = wal; pragma synchronous = normal;'); // every chat line is a write; avoid a full fsync for each
 db.exec('create table if not exists events(id integer primary key, ts text, user text, text text)');
 db.exec('create table if not exists tokens(token text primary key, kind text, role text, name text, expires integer)');
 db.exec('create table if not exists kv(k text primary key, v text)');
 const insert = db.prepare('insert into events(ts,user,text) values(?,?,?)');
-// Joining reads a bounded slice and two small aggregates, never the whole history.
+// Joining reads a bounded slice and two small aggregates; the table itself is capped at about EVENT_KEEP rows by pruning.
 db.exec('create index if not exists events_user on events(user, id)');
 const recent = db.prepare('select ts,user,text from (select id,ts,user,text from events order by id desc limit ?) order by id');
 const toolCounts = db.prepare("select substr(text, 8, instr(substr(text, 8) || ' ', ' ') - 1) as name, count(*) as n from events where user = 'agent' and text like '[tool] %' group by name");
@@ -134,11 +135,17 @@ const askOps = (tool, input) =>
 
 // Driver: null = open (anyone steers). Otherwise only the driver's messages reach the agent. Tracked by identity key.
 let driver = null; // {key, name}
-const clearDriverIfGone = (key) => {
-  if (driver?.key === key && !socketsOf(key).length) {
-    emit('system', `${driver.name} left, the session is open to everyone`);
-    driver = null;
-  }
+// A driver whose connection drops (page refresh, wifi blip) keeps the wheel for a grace period; kicked members lose it at once.
+const GRACE_MS = process.env.DRIVER_GRACE_MS !== undefined ? Number(process.env.DRIVER_GRACE_MS) : 10000;
+const clearDriverIfGone = (key, grace = GRACE_MS) => {
+  const check = () => {
+    if (driver?.key === key && !socketsOf(key).length) {
+      emit('system', `${driver.name} left, the session is open to everyone`);
+      driver = null;
+    }
+  };
+  if (grace > 0) setTimeout(check, grace).unref();
+  else check();
 };
 
 // Input queue: teammates' messages land here; the agent consumes them in order.
@@ -271,7 +278,7 @@ async function runAgent() {
 const removeMember = (key) => {
   delToken.run(key);
   for (const [w, m] of socketsOf(key)) { m.dead = true; clients.delete(w); w.close(4403, 'removed'); setTimeout(() => w.terminate(), 1000); }
-  clearDriverIfGone(key);
+  clearDriverIfGone(key, 0);
 };
 
 const HELP = '/who /members /token /handoff [name] /save | ops: /invite /kick <name> /revoke <name> | owner: /op <name> /deop <name> /allow <Tool> /deny <Tool> /sandbox <read-only|write> (codex)';
@@ -288,7 +295,7 @@ function command(ws, c, line) {
       if (AGENT === 'codex' && !TRUST_MEMBERS) return tell(ws, 'codex mode is owner-only: a member could make Codex read any file your account can read, including its own login. Restart with CODEX_TRUST_MEMBERS=1 if you accept that.');
       const t = token();
       putToken(t, 'invite', 'member', null, Date.now() + INVITE_TTL_MS);
-      return tell(ws, `invite link (single-use, ${Math.round(INVITE_TTL_MS / 3600000)}h): ${c.origin}/#${t}`);
+      return tell(ws, `invite link (single-use, ${ttlText(INVITE_TTL_MS)}): ${c.origin}/#${t}`);
     }
     case 'token': return tell(ws, `your token for the CLI/MCP (SANDWICH_TOKEN): ${c.token}`);
     case 'kick': {
@@ -368,11 +375,16 @@ function memoryApi(req, res) {
   const who = whoIs(req.headers.authorization?.replace(/^Bearer /, ''));
   const out = (code, body) => res.writeHead(code, { 'content-type': 'text/plain' }).end(body);
   if (!who) return out(401, 'session token required (/token in the chat)');
-  if (req.method === 'GET') return out(200, existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '');
+  if (req.method === 'GET') {
+    const text = existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '';
+    // ?wrap=1 is what agents get: capped, and framed as data rather than instructions (memory is written by teammates)
+    return out(200, new URL(req.url, 'http://x').searchParams.get('wrap') === '1' ? promptMemory(text) : text);
+  }
   if (req.method !== 'POST') return out(405, 'GET or POST');
   if (codexWritable() && who.role !== 'owner' && who.role !== 'op') return out(403, 'codex can write files right now, so only the owner and ops can add memory');
   if (limited('mem:' + hash(req.headers.authorization), MEM_RATE)) return out(429, 'slow down');
   let body = '';
+  req.setEncoding('utf8'); // a multi-byte character split across chunks must not turn into U+FFFD
   req.on('error', () => {});
   req.on('data', (d) => { body += d; if (body.length > 65536) { out(413, 'too large'); req.destroy(); } });
   req.on('end', () => {
@@ -403,7 +415,8 @@ const handler = (req, res) => (req.url.split('?')[0] === '/memory' ? memoryApi(r
 const server = tls
   ? https.createServer({ cert: readFileSync(process.env.SANDWICH_CERT), key: readFileSync(process.env.SANDWICH_KEY) }, handler)
   : http.createServer(handler);
-const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 });
+const wss = new WebSocketServer({ server, maxPayload: 32 * 1024 }); // a 4000-character message can reach ~24KB once JSON-escaped
+wss.on('error', () => {}); // ws re-emits the HTTP server's errors; without a listener that throws before server.on('error') below runs
 
 wss.on('connection', (ws, req) => {
   ws.on('error', () => {}); // protocol violations (bad frames, oversize) close this socket, never the server
@@ -489,7 +502,11 @@ function agentStopped() {
   pending.clear();
 }
 runAgent().then(agentStopped, (e) => { console.error('agent:', e); agentStopped(); });
-server.listen(PORT, '127.0.0.1', () => {
+// If we can't listen (port taken), stop: a half-started server with a live agent and no owner link is worse than none.
+server.on('error', (e) => { console.error(`cannot listen on ${HOST}:${PORT}: ${e.message}`); process.exit(1); });
+const HOST = process.env.HOST || '127.0.0.1'; // set HOST=0.0.0.0 only behind TLS (a tunnel or SANDWICH_CERT); tokens are sent in the clear otherwise
+server.listen(PORT, HOST, () => {
+  if (HOST !== '127.0.0.1' && !tls) console.log('WARNING: listening beyond localhost without TLS: session tokens travel unencrypted. Put it behind a TLS tunnel or set SANDWICH_CERT/SANDWICH_KEY.');
   if (AGENT === 'codex') console.log(`codex mode: members ${TRUST_MEMBERS ? 'ARE' : 'are NOT'} allowed (CODEX_TRUST_MEMBERS). Codex can read any file your OS account can read, not only this folder, and has no per-command approval.`);
   console.log(`owner link: ${tls ? 'https' : 'http'}://127.0.0.1:${PORT}/#${ownerToken}`);
   if (process.env.EXPOSE_TOKEN) console.log(`HOST_TOKEN=${ownerToken}`);

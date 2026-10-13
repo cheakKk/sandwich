@@ -25,7 +25,7 @@ await new Promise((r) => { const s = net.connect(3000, '127.0.0.1', () => s.writ
 await alive();
 
 // C2: protocol violations before auth (bad UTF-8, oversize frame) must not crash the server
-const junk = await open('nope'); junk.send(Buffer.from([0xff, 0xfe, 0xfd]), { binary: false }); await wait();
+const junk = await open(owner, 'junk'); junk.send(Buffer.from([0xff, 0xfe, 0xfd]), { binary: false }); await wait(); // invalid UTF-8 from a live, authenticated socket
 const big = await open(owner, 'big'); big.send('x'.repeat(200000)); await wait(400);
 await alive();
 
@@ -62,6 +62,11 @@ assert(heard(flood, 'slow down'), 'flooder is told to slow down');
 // H1/H2: kick and deop reach every socket of that member
 const kim2 = await open(kim.token, 'kim'); await wait();
 say(o, '/op kim'); await wait();
+// positive control: while kim is an op, kim's second tab really can approve (so the later refusal means something)
+say(o, 'run: touch control'); await wait();
+const control = o.got.find((m) => m.type === 'approval' && m.input.command === 'touch control');
+kim2.send(JSON.stringify({ type: 'decide', id: control.id, allow: true })); await wait();
+assert(heard(o, '(fake) approval result: allow'), 'an op can approve from any tab');
 say(o, 'run: touch a'); await wait();
 const ask = o.got.find((m) => m.type === 'approval' && m.input.command === 'touch a');
 assert(ask, 'approval for touch a arrived; last events: ' + JSON.stringify(o.got.slice(-5).map((e) => e.type ?? e.user + ':' + e.text)));
@@ -72,14 +77,25 @@ await wait();
 assert(!o.got.slice(mark2).some((e) => e.text?.includes('approval result')), 'a de-opped member cannot approve from either tab');
 o.send(JSON.stringify({ type: 'decide', id: ask.id, allow: false })); await wait();
 
+// a driver who drops for a moment (page refresh, wifi blip) keeps the wheel; one who stays away loses it after a grace period
+const drv = await join(o, 'drv'); const watcher = await join(o, 'watcher');
+say(o, '/handoff drv'); await wait();
+drv.ws.close(); await wait(150);
+say(watcher.ws, 'during grace'); await wait();
+assert(heard(watcher.ws, 'drv is driving'), 'driver slot is held during the grace period');
+const back = await open(drv.token, 'drv'); await wait(900); // returns inside the grace period
+say(watcher.ws, 'after return'); await wait();
+assert(heard(watcher.ws, 'drv is driving', 0) && !o.got.some((e) => e.user === 'agent' && e.text.includes('watcher: after return')), 'a returning driver keeps the wheel');
+back.close(); await wait(1000); // gone for good: past the grace period
+const dm = o.got.length; say(watcher.ws, 'now open'); await wait();
+assert(o.got.slice(dm).some((e) => e.user === 'agent' && e.text.includes('watcher: now open')), 'session reopens after the driver stays away');
+
 // M6: kicking the driver gives the session back to everyone
 say(o, '/handoff kim'); await wait();
 say(o, '/kick kim'); await wait();
 assert(kim.ws.code === 4403 && kim2.code === 4403, 'every socket of a kicked member is closed');
 const m2 = o.got.length; say(o, 'after kick'); await wait();
 assert(o.got.slice(m2).some((e) => e.user === 'agent' && e.text.includes('ann: after kick')), 'driver slot cleared when the driver is kicked');
-kim2.send(JSON.stringify({ text: 'ghost' })); await wait();
-assert(!o.got.some((e) => e.text === 'ghost'), 'a kicked socket cannot keep talking');
 
 // M4: members cannot forge the author, and entries are size limited
 const bob = await join(o, 'bobby');

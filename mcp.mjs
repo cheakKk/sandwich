@@ -11,11 +11,11 @@ const s = new McpServer({ name: 'sandwich', version: '0.1.0' }, {
 const text = (t) => ({ content: [{ type: 'text', text: t }] });
 
 s.registerTool('get_context', { description: 'Read the shared project memory (decisions, tasks, handoffs). Call this at the start of a session.' },
-  async () => text((await getContext()) || '(no memory yet)'));
+  async () => text((await getContext(true)) || '(no memory yet)'));
 
 s.registerTool('append_memory', {
   description: 'Add an entry to the shared project memory. Use kind=handoff when stopping so a teammate or another tool can continue.',
-  inputSchema: { kind: z.enum(['note', 'decision', 'task', 'done', 'handoff']), text: z.string().min(1).max(4000) },
+  inputSchema: { kind: z.enum(['note', 'decision', 'task', 'done', 'handoff']), text: z.string().min(1).max(2000) },
 }, async ({ kind, text: t }) => (await addMemory(kind, t), text('saved')));
 
 await s.connect(new StdioServerTransport());

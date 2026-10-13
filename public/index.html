@@ -21,10 +21,20 @@
 <form id="f"><input id="text" placeholder="steer the agent, or /help" autofocus><button>Send</button></form>
 <script>
   const log = document.getElementById('log');
-  const t = location.hash.slice(1);
   const me = localStorage.getItem('u') || prompt('Your name') || 'guest';
   localStorage.setItem('u', me);
-  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/?t=' + encodeURIComponent(t) + '&n=' + encodeURIComponent(me));
+  let ws;
+  const connect = () => {
+    // re-read the hash each time: after an invite is redeemed it holds our own session token
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/?t=' + encodeURIComponent(location.hash.slice(1)) + '&n=' + encodeURIComponent(me));
+    ws.onopen = () => { log.textContent = ''; for (const k in asks) delete asks[k]; }; // the server replays history on every connect
+    ws.onclose = (e) => {
+      if (e.code === 4401) { log.textContent = 'Sandwich is invite only. Invite links work once and expire. Ask the owner for a new one.'; }
+      else if (e.code === 4403 || e.code === 4408) { log.textContent = e.reason || (e.code === 4408 ? 'Too many tabs open.' : 'You were removed from this session.'); }
+      else { document.getElementById('status').textContent = 'connection lost, reconnecting...'; setTimeout(connect, 2000); }
+    };
+    ws.onmessage = onMessage;
+  };
   const add = (el) => { log.append(el); log.scrollTop = log.scrollHeight; };
   const asks = {}, typers = {};
   let busy = false;
@@ -34,11 +44,7 @@
   };
   let lastTyped = 0;
   text.oninput = () => { if (ws.readyState === 1 && Date.now() - lastTyped > 1500) { lastTyped = Date.now(); ws.send(JSON.stringify({ type: 'typing' })); } };
-  ws.onclose = (e) => {
-    if (e.code === 4401) log.textContent = 'Sandwich is invite only. Invite links work once and expire. Ask the owner for a new one.';
-    if (e.code === 4403) log.textContent = e.reason || 'You were removed from this session.';
-  };
-  ws.onmessage = (e) => {
+  const onMessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.type === 'status') { busy = m.busy; showStatus(); }
     else if (m.type === 'typing') {
@@ -66,6 +72,8 @@
   };
   f.onsubmit = (e) => {
     e.preventDefault();
+    if (ws.readyState !== 1) return; // keep what they typed until we are connected again
     ws.send(JSON.stringify({ text: text.value })); text.value = '';
   };
+  connect();
 </script>

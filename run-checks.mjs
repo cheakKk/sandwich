@@ -26,7 +26,7 @@ record('unit tests', spawnSync('node', ['--test', ...unitFiles], { cwd: here, st
 async function suite(env, files) {
   const dir = mkdtempSync(join(tmpdir(), 'sandwich-'));
   const db = join(dir, 'data.db');
-  const server = spawn('node', [join(here, 'server.js')], { cwd: dir, env: { ...process.env, EXPOSE_TOKEN: '1', INVITE_TTL_MS: '1500', MEM_RATE: '1000', EVENT_KEEP: '400', PENDING_TTL_MS: '3000', SANDWICH_DB: db, ...env }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const server = spawn('node', [join(here, 'server.js')], { cwd: dir, env: { ...process.env, EXPOSE_TOKEN: '1', INVITE_TTL_MS: '1500', MEM_RATE: '1000', EVENT_KEEP: '400', PENDING_TTL_MS: '3000', DRIVER_GRACE_MS: '700', SANDWICH_DB: db, ...env }, stdio: ['ignore', 'pipe', 'inherit'] });
   const token = await new Promise((resolve) => {
     const t = setTimeout(() => resolve(null), 15000);
     server.stdout.on('data', (d) => /HOST_TOKEN=(\w+)/.test(d) && (clearTimeout(t), resolve(RegExp.$1)));
@@ -38,6 +38,7 @@ async function suite(env, files) {
 }
 
 await suite({ FAKE: '1' }, ['check.mjs', 'check-memory.mjs', 'check-abuse.mjs']);
+await suite({ FAKE: '1' }, ['check-ui.mjs']);
 await suite({ AGENT: 'codex', FAKE_CODEX: '1', CODEX_TRUST_MEMBERS: '1' }, ['check-codex.mjs']);
 await suite({ AGENT: 'codex', FAKE_CODEX: '1' }, ['check-codex-untrusted.mjs']);
 await suite({ FAKE: '1' }, ['check-die.mjs']);
