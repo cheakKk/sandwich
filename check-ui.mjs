@@ -35,7 +35,7 @@ try {
   await call('Page.navigate', { url: `http://127.0.0.1:3000/#${T}` });
   await wait(2500);
 
-  assert.equal(await read('document.title'), 'Sandwich (owner)');
+  assert.equal(await read('document.title'), 'Sandwich (owner, guarded)');
   assert(await read("document.getElementById('log').textContent.includes('uitest joined')"), 'history replayed');
   assert(await read("/Quick review|This session is new/.test(document.getElementById('log').textContent)"), 'recap shown to the joiner');
 

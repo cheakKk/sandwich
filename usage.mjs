@@ -43,3 +43,19 @@ export function formatUsage(rows) {
   const lines = rows.map((r) => `${r.name}: ${r.turns} turn${r.turns === 1 ? '' : 's'}, ${k(r.tokensIn)} in / ${k(r.tokensOut)} out (${k(r.cacheRead)} cached)${r.costUsd == null ? '' : `, about $${r.costUsd.toFixed(2)}`}`);
   return `${lines.join('\n')}\nDollar figures are the SDK's estimates, not a bill (a subscription login is not charged per token).`;
 }
+
+// A member's effective daily token cap. An explicit cap always wins ("unlimited" is an explicit opt-out). In Trusted mode,
+// where tools run without per-command approval, members without an explicit cap get a default one.
+export function effectiveCap(explicit, mode, defaultCap) {
+  if (explicit === 'unlimited') return null;
+  if (explicit != null && Number.isFinite(Number(explicit)) && Number(explicit) > 0) return Number(explicit);
+  return mode === 'trusted' && defaultCap > 0 ? defaultCap : null;
+}
+
+// A runaway agent can chain tool calls forever inside one turn. This counts them; the caller resets it when the turn ends.
+export function toolLimiter(max) {
+  let used = 0;
+  return { allow: () => ++used <= max, reset: () => { used = 0; } };
+}
+
+export const overBudget = (spentUsd, budgetUsd) => budgetUsd != null && spentUsd >= budgetUsd;

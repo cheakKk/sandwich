@@ -12,7 +12,7 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
 import { fakeCodex, runCodex } from './codex.mjs';
-import { claudeTurn, codexTurn, creditTurn, dayStart, formatUsage, overCap } from './usage.mjs';
+import { claudeTurn, codexTurn, creditTurn, dayStart, effectiveCap, formatUsage, overBudget, overCap, toolLimiter } from './usage.mjs';
 import { compactMemory, dbPath, originFrom, parseSummary, promptMemory, readScope, recap, takeBatch, ttlText } from './lib.mjs';
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -26,6 +26,12 @@ const REPLAY = 300; // events replayed to a joiner
 const EVENT_KEEP = Number(process.env.EVENT_KEEP) || 5000; // chat history kept; older events are pruned so nobody can fill the disk
 const PENDING_TTL_MS = Number(process.env.PENDING_TTL_MS) || 5 * 60 * 1000; // an unanswered approval is denied after this
 const MAX_PENDING = 20;
+// Set by the hosted driver: this process runs inside an isolated, disposable sandbox. Trusted mode is refused anywhere else.
+const SANDBOXED = process.env.SANDWICH_SANDBOXED === '1';
+const DEFAULT_GUEST_CAP = Number(process.env.SANDWICH_DEFAULT_GUEST_CAP ?? 200000); // tokens per day for members in Trusted mode
+const MAX_TOOLS_PER_TURN = Number(process.env.SANDWICH_MAX_TOOLS_PER_TURN) || 60; // Trusted mode: a runaway turn is cut off
+const MAX_QUEUE = Number(process.env.SANDWICH_MAX_QUEUE) || 50; // messages waiting for the agent
+const TRUSTED_BUDGET_USD = 5; // Trusted mode always has a session budget; the owner can change it with /budget
 const MAX_SOCKETS = 60; // in total
 const MAX_TABS = 3; // per member (the owner gets more)
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS) || 30 * 24 * 3600 * 1000; // sliding: renewed each time they connect
@@ -126,8 +132,28 @@ setInterval(() => { const cutoff = Date.now() - 60000; for (const [k, v] of hits
 // Tool approvals: owner and ops resolve them. Owner can pre-approve a tool with /allow.
 const allowed = new Set();
 const pending = new Map(); // id -> {resolve, tool, input}
+// Trust setting, switched only by the owner. Guarded: every tool beyond reading needs an op. Trusted: tools run without
+// per-command approval, which is only acceptable inside the isolated sandbox, so it is capped (tools per turn, tokens
+// per guest, session budget) and the owner and guests are told it is on. Always starts Guarded after a restart.
+let mode = 'guarded';
+const MODE_NOTE = {
+  guarded: 'Guarded: anything the agent wants to do beyond reading needs an op to approve it.',
+  trusted: 'Trusted: the agent runs tools without per-command approval inside an isolated sandbox. Guests have a daily token cap and the session has a budget.',
+};
+let budgetUsd = Number(process.env.SANDWICH_BUDGET_USD) > 0 ? Number(process.env.SANDWICH_BUDGET_USD) : null;
+const effectiveBudget = () => budgetUsd ?? (mode === 'trusted' ? TRUSTED_BUDGET_USD : null);
+const spentUsd = db.prepare('select coalesce(sum(cost_usd), 0) as n from usage');
+const toolsThisTurn = toolLimiter(MAX_TOOLS_PER_TURN);
+let toolLimitNoted = false;
+function trustedTool() {
+  if (toolsThisTurn.allow()) return { behavior: 'allow' };
+  if (!toolLimitNoted) { toolLimitNoted = true; emit('system', `the agent hit the limit of ${MAX_TOOLS_PER_TURN} tool calls in one turn, so further tools were refused`); }
+  return { behavior: 'deny' };
+}
 const askOps = (tool, input) =>
-  allowed.has(tool)
+  mode === 'trusted'
+    ? trustedTool()
+    : allowed.has(tool)
     ? { behavior: 'allow' }
     : new Promise((resolve) => {
         if (pending.size >= MAX_PENDING) return resolve({ behavior: 'deny' }); // a flood of requests must not bury the real ones
@@ -184,6 +210,8 @@ const recordUsage = (by, kind, t) => {
   addUsage.run(Date.now(), by.key, by.name, kind, t.tokensIn, t.tokensOut, t.cacheRead, t.costUsd);
 };
 function onClaudeResult(m) {
+  toolsThisTurn.reset(); // a new turn starts with a fresh tool allowance
+  toolLimitNoted = false;
   const t = claudeTurn(m, claudeTotal);
   claudeTotal = t.total;
   const { by, rest } = creditTurn(senders, m.queued_turn_count);
@@ -267,6 +295,12 @@ async function runAgent() {
       emit('agent', `(fake) got: ${c.slice(0, 200)}`);
       if (c.includes('die:')) return; // lets a test see what happens when the agent session ends
       if (c.includes('Start your reply with "SUMMARY:"')) agentSays('SUMMARY: fake summary line');
+      const burst = c.match(/tools:(\d+)/); // a fake turn that tries N tool calls in a row
+      if (burst) {
+        let allowedCount = 0, deniedCount = 0;
+        for (let i = 0; i < Number(burst[1]); i++) (await askOps('Bash', { command: 'x' })).behavior === 'allow' ? allowedCount++ : deniedCount++;
+        emit('agent', `(fake) tools: ${allowedCount} allowed, ${deniedCount} denied`);
+      }
       if (c.includes('run:')) {
         const r = await askOps('Bash', { command: c.split('run:')[1].trim() });
         emit('agent', `(fake) approval result: ${r.behavior}`);
@@ -319,7 +353,7 @@ const removeMember = (key) => {
   clearDriverIfGone(key, 0);
 };
 
-const HELP = '/who /members /usage [today] /token /handoff [name] /save | ops: /invite /kick <name> /revoke <name> | owner: /op <name> /deop <name> /cap <name> <tokens|off> /allow <Tool> /deny <Tool> /sandbox <read-only|write> (codex)';
+const HELP = '/who /members /usage [today] /token /handoff [name] /save | ops: /invite /kick <name> /revoke <name> | owner: /op <name> /deop <name> /cap <name> <tokens|off|unlimited> /budget <dollars|off> /trust <guarded|trusted> /allow <Tool> /deny <Tool> /sandbox <read-only|write> (codex)';
 
 function command(ws, c, line) {
   const [cmd, arg, arg2] = line.slice(1).split(/\s+/);
@@ -327,7 +361,23 @@ function command(ws, c, line) {
   const isDriver = driver?.key === c.key;
   switch (cmd) {
     case 'help': return tell(ws, HELP);
-    case 'who': return tell(ws, [...clients.values()].map((m) => `${m.name} (${m.role}${m.key === driver?.key ? ', driver' : ''})`).join(', ') + `; driver: ${driver?.name ?? 'open'}`);
+    case 'who': return tell(ws, [...clients.values()].map((m) => `${m.name} (${m.role}${m.key === driver?.key ? ', driver' : ''})`).join(', ') + `; driver: ${driver?.name ?? 'open'}; mode: ${mode}`);
+    case 'trust': {
+      if (!need(c.role === 'owner')) return;
+      if (AGENT !== 'claude') return tell(ws, 'trust settings apply to Claude sessions; Codex has its own sandbox setting (/sandbox)');
+      if (arg !== 'guarded' && arg !== 'trusted') return tell(ws, 'usage: /trust <guarded|trusted>');
+      if (arg === 'trusted' && !SANDBOXED) return tell(ws, 'Trusted mode is only available inside the hosted sandbox. On your own computer it would let the agent run commands without asking.');
+      mode = arg;
+      broadcast({ type: 'mode', mode });
+      return emit('system', `${c.name} switched the session. ${MODE_NOTE[mode]}`);
+    }
+    case 'budget': { // owner sets the dollar budget for the whole session; prompts stop once the recorded cost reaches it
+      if (!need(c.role === 'owner')) return;
+      const n = Number(arg);
+      if (arg !== 'off' && !(n > 0)) return tell(ws, 'usage: /budget <dollars|off>');
+      budgetUsd = arg === 'off' ? null : n;
+      return emit('system', arg === 'off' ? `session budget is now off${mode === 'trusted' ? ` (Trusted mode keeps a $${TRUSTED_BUDGET_USD} default)` : ''}` : `session budget is now $${n}`);
+    }
     case 'invite': {
       if (!need(isOp(c))) return;
       if (AGENT === 'codex' && !TRUST_MEMBERS) return tell(ws, 'codex mode is owner-only: a member could make Codex read any file your account can read, including its own login. Restart with CODEX_TRUST_MEMBERS=1 if you accept that.');
@@ -362,10 +412,11 @@ function command(ws, c, line) {
       const row = arg && db.prepare("select token from tokens where kind = 'session' and lower(name) = lower(?)").get(arg);
       if (arg && !row) return tell(ws, `no member named ${arg}`);
       const n = Number(arg2);
-      if (!row || !(arg2 === 'off' || (Number.isInteger(n) && n > 0))) return tell(ws, 'usage: /cap <name> <tokens per day | off>');
+      if (!row || !(arg2 === 'off' || arg2 === 'unlimited' || (Number.isInteger(n) && n > 0))) return tell(ws, 'usage: /cap <name> <tokens per day | off | unlimited>');
       if (arg2 === 'off') db.prepare('delete from kv where k = ?').run('cap:' + row.token);
-      else db.prepare('insert or replace into kv(k, v) values(?, ?)').run('cap:' + row.token, String(n));
-      return emit('system', arg2 === 'off' ? `${arg}'s usage cap was removed by ${c.name}` : `${arg} is capped at ${n} tokens per day (set by ${c.name}); a turn already running can finish`);
+      else db.prepare('insert or replace into kv(k, v) values(?, ?)').run('cap:' + row.token, arg2 === 'unlimited' ? 'unlimited' : String(n));
+      if (arg2 === 'unlimited') return emit('system', `${arg} is exempt from usage caps (set by ${c.name}), including the Trusted-mode default`);
+      return emit('system', arg2 === 'off' ? `${arg}'s own usage cap was removed by ${c.name}${mode === 'trusted' ? ' (the Trusted-mode default still applies)' : ''}` : `${arg} is capped at ${n} tokens per day (set by ${c.name}); a turn already running can finish`);
     }
     case 'members': {
       const rows = db.prepare("select name, role from tokens where kind = 'session' order by name").all();
@@ -509,6 +560,8 @@ wss.on('connection', (ws, req) => {
   clients.set(ws, c);
   send(ws, { type: 'role', role, name });
   send(ws, { type: 'status', busy });
+  send(ws, { type: 'mode', mode });
+  tell(ws, MODE_NOTE[mode]);
   recent.all(REPLAY).forEach((r) => send(ws, r)); // history replay
   const tools = Object.fromEntries(toolCounts.all().map((r) => [r.name, r.n]));
   tell(ws, recap({ tools, lastAgent: lastAgentText.get()?.text ?? null, memory: existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '' })); // quick review for the joiner
@@ -539,7 +592,11 @@ wss.on('connection', (ws, req) => {
       emit(c.name, m.text);
       if (codexWritable() && !isOp(c)) return tell(ws, 'codex can write files right now, so only the owner and ops can steer it. Your message is visible to everyone.');
       if (driver && driver.key !== c.key) return tell(ws, `${driver.name} is driving; your message is visible but not sent to the agent`);
-      const cap = c.role === 'owner' ? null : Number(getKv('cap:' + c.key)) || null;
+      if (queue.length >= MAX_QUEUE) return tell(ws, 'the agent is behind: too many messages are waiting. Try again in a moment.');
+      const budget = effectiveBudget();
+      if (overBudget(spentUsd.get().n, budget)) return tell(ws, `the session budget ($${budget}) is used up, so new prompts are paused. The owner can raise it with /budget.`);
+      // explicit caps apply to anyone but the owner; the Trusted-mode default applies to plain members only
+      const cap = c.role === 'owner' ? null : effectiveCap(getKv('cap:' + c.key), c.role === 'member' ? mode : 'guarded', DEFAULT_GUEST_CAP);
       if (overCap(tokensToday.get(c.key, dayStart(Date.now())).n, cap)) return tell(ws, `you have reached your daily usage cap (${cap} tokens). Your message is visible but was not sent to the agent; the owner can raise it.`);
       push(`${c.name}: ${m.text.replace(/\s*[\r\n]+\s*/g, ' / ')}`, { op: isOp(c), by: { key: c.key, name: c.name } }); // one line, so a message can't pose as another sender
     } catch (e) {

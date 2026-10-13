@@ -63,3 +63,29 @@ test('formatUsage: one line per member, dollars only when there are some, honest
   assert.match(text, /estimates/i);
   assert.match(formatUsage([]), /no usage yet/i);
 });
+
+// --- trust settings: default caps, per-turn tool limit, session budget ---
+import { effectiveCap, overBudget, toolLimiter } from './usage.mjs';
+
+test('effectiveCap: an explicit cap wins; Trusted adds a default; unlimited opts out; Guarded has none', () => {
+  assert.equal(effectiveCap(500, 'trusted', 200000), 500);
+  assert.equal(effectiveCap(500, 'guarded', 200000), 500);
+  assert.equal(effectiveCap(null, 'trusted', 200000), 200000);
+  assert.equal(effectiveCap(null, 'guarded', 200000), null);
+  assert.equal(effectiveCap('unlimited', 'trusted', 200000), null);
+  assert.equal(effectiveCap(undefined, 'trusted', 0), null, 'a default of 0 means no default');
+});
+
+test('toolLimiter: allows up to the limit within a turn, then refuses until the turn ends', () => {
+  const l = toolLimiter(3);
+  assert.deepEqual([l.allow(), l.allow(), l.allow(), l.allow(), l.allow()], [true, true, true, false, false]);
+  l.reset();
+  assert.equal(l.allow(), true);
+});
+
+test('overBudget: only a set budget can be exceeded', () => {
+  assert.equal(overBudget(5.01, 5), true);
+  assert.equal(overBudget(5, 5), true);
+  assert.equal(overBudget(4.99, 5), false);
+  assert.equal(overBudget(1e6, null), false);
+});

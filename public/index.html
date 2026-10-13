@@ -37,7 +37,8 @@
   };
   const add = (el) => { log.append(el); log.scrollTop = log.scrollHeight; };
   const asks = {}, typers = {};
-  let busy = false;
+  let busy = false, role = '', mode = '';
+  const setTitle = () => { document.title = 'Sandwich (' + role + (mode ? ', ' + mode : '') + ')'; };
   const showStatus = () => {
     const who = Object.keys(typers).filter((n) => typers[n] > Date.now());
     document.getElementById('status').textContent = [busy && 'agent is working', who.length && who.join(', ') + (who.length > 1 ? ' are' : ' is') + ' typing'].filter(Boolean).join(' · ');
@@ -49,7 +50,8 @@
     if (m.type === 'status') { busy = m.busy; showStatus(); }
     else if (m.type === 'typing') {
       typers[m.name] = Date.now() + 3000; showStatus(); setTimeout(showStatus, 3100);
-    } else if (m.type === 'role') document.title = 'Sandwich (' + m.role + ')';
+    } else if (m.type === 'role') { role = m.role; setTitle(); }
+    else if (m.type === 'mode') { mode = m.mode; setTitle(); }
     else if (m.type === 'session') history.replaceState(null, '', '#' + m.token); // the invite is burned; keep our own session so refresh works
     else if (m.type === 'approval') {
       const d = document.createElement('div'); d.className = 'ask'; asks[m.id] = d;
@@ -64,7 +66,7 @@
       }
       add(d);
     } else if (m.type === 'resolved') { asks[m.id]?.remove(); }
-    else {
+    else if (m.user) { // chat events only; unknown message types are ignored instead of shown as junk
       const d = document.createElement('div'); d.className = 'ev ' + m.user;
       const b = document.createElement('b'); b.textContent = m.user;
       d.append(b, m.text); add(d);
