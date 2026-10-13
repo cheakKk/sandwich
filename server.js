@@ -11,9 +11,11 @@ import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
+import { fakeCodex, runCodex } from './codex.mjs';
 import { compactMemory, dbPath, originFrom, parseSummary, promptMemory, recap, sensitive } from './lib.mjs';
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
+const AGENT = process.env.AGENT === 'codex' ? 'codex' : 'claude'; // whose login/plan powers the session
 const MEMORY = 'PROJECT_MEMORY.md';
 const MAX_TEXT = 4000; // one chat message
 const MAX_ENTRY = 2000; // one memory entry
@@ -30,6 +32,7 @@ mkdirSync(dirname(DB_FILE), { recursive: true });
 const db = new DatabaseSync(DB_FILE);
 db.exec('create table if not exists events(id integer primary key, ts text, user text, text text)');
 db.exec('create table if not exists tokens(token text primary key, kind text, role text, name text, expires integer)');
+db.exec('create table if not exists kv(k text primary key, v text)');
 const insert = db.prepare('insert into events(ts,user,text) values(?,?,?)');
 
 // Invite-only. The owner token is printed on the console at startup. An invite is single-use and expires;
@@ -143,7 +146,29 @@ function agentSays(text) {
   emit('system', `${MEMORY} saved`);
 }
 
+// Codex: turns run one at a time, so messages that pile up during a turn go in as one batch. There is no
+// per-command approval (the SDK is non-interactive); the sandbox mode is the guardrail and only the owner changes it.
+let sandbox = 'read-only';
+async function runCodexAgent() {
+  const codex = process.env.FAKE_CODEX ? fakeCodex() : new (await import('@openai/codex-sdk')).Codex(process.env.CODEX_API_KEY ? { apiKey: process.env.CODEX_API_KEY } : {});
+  await runCodex({
+    codex,
+    threadId: db.prepare("select v from kv where k = 'codex_thread'").get()?.v ?? null,
+    options: () => ({ sandboxMode: sandbox, approvalPolicy: 'never', workingDirectory: process.cwd(), networkAccessEnabled: false, skipGitRepoCheck: true }),
+    next: async () => {
+      while (!queue.length) await new Promise((r) => (wake = r));
+      return queue.splice(0).join('\n\n');
+    },
+    say: agentSays,
+    tool: (line) => emit('agent', line),
+    idle: () => { if (!queue.length) setBusy(false); },
+    onThread: (id) => db.prepare("insert or replace into kv(k, v) values('codex_thread', ?)").run(id),
+    onError: (m) => emit('system', m),
+  });
+}
+
 async function runAgent() {
+  if (AGENT === 'codex') return runCodexAgent();
   if (process.env.FAKE) {
     for await (const m of inputs()) {
       const c = m.message.content;
@@ -185,7 +210,7 @@ async function runAgent() {
   }
 }
 
-const HELP = '/who /token /handoff [name] /save | ops: /invite /kick <name> | owner: /op <name> /deop <name> /allow <Tool> /deny <Tool>';
+const HELP = '/who /token /handoff [name] /save | ops: /invite /kick <name> | owner: /op <name> /deop <name> /allow <Tool> /deny <Tool> /sandbox <read-only|write> (codex)';
 
 function command(ws, c, line) {
   const [cmd, arg] = line.slice(1).split(/\s+/);
@@ -222,6 +247,13 @@ function command(ws, c, line) {
         if (isOp(m)) pending.forEach((p, id) => send(w, { type: 'approval', id, tool: p.tool, input: p.input }));
       }
       return emit('system', `${target[1].name} is now ${role}`);
+    }
+    case 'sandbox': {
+      if (!need(c.role === 'owner')) return;
+      if (AGENT !== 'codex') return tell(ws, '/sandbox only applies when the server runs with AGENT=codex');
+      if (arg !== 'read-only' && arg !== 'write') return tell(ws, `sandbox is ${sandbox}. Use /sandbox read-only or /sandbox write`);
+      sandbox = arg === 'write' ? 'workspace-write' : 'read-only';
+      return emit('system', `codex sandbox is now ${sandbox} (set by ${c.name}), from the next turn`);
     }
     case 'allow': case 'deny': {
       if (!need(c.role === 'owner' && arg)) return;
@@ -356,6 +388,7 @@ runAgent().catch((e) => {
   pending.clear();
 });
 server.listen(PORT, '127.0.0.1', () => {
+  if (AGENT === 'codex') console.log('codex mode: sandbox is read-only, but members can still make Codex read any file in this folder. Keep secrets out of it.');
   console.log(`owner link: ${tls ? 'https' : 'http'}://127.0.0.1:${PORT}/#${ownerToken}`);
   if (process.env.EXPOSE_TOKEN) console.log(`HOST_TOKEN=${ownerToken}`);
 });
