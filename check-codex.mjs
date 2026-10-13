@@ -23,8 +23,22 @@ say(o, '/sandbox nonsense'); await wait();
 assert(heard(o, 'Use /sandbox read-only or /sandbox write'), 'bad value gets a hint');
 let mark = o.got.length; say(o, '/sandbox write'); await wait();
 assert(heard(o, 'codex sandbox is now workspace-write', mark));
+// with writes on, only owner and ops reach codex: there is no per-command approval to catch a member's request
 mark = o.got.length; say(guest, 'edit a file'); await wait();
-assert(heard(o, '(fake codex sandbox=workspace-write) got: gus: edit a file', mark), 'new sandbox applies next turn');
+assert(!heard(o, 'got: gus: edit a file', mark), 'member cannot drive a writable codex');
+assert(heard(guest, 'owner and ops', 0), 'member is told why');
+say(o, '/op gus'); await wait();
+mark = o.got.length; say(guest, 'now allowed'); await wait();
+assert(heard(o, '(fake codex sandbox=workspace-write) got: gus: now allowed', mark), 'an op can drive it; new sandbox applies next turn');
+
+// approvals do not exist in codex mode, so /allow says so instead of pretending
+say(o, '/allow Bash'); await wait();
+assert(heard(o, "don't apply in codex mode"), '/allow is honest in codex mode');
+
+// a late joiner's recap shows what codex has done, from the SQL aggregate
+say(o, '/invite'); await wait();
+const late = await open(o.got.filter((e) => e.text?.startsWith('invite link')).at(-1).text.match(/#(\w+)/)[1], 'lia'); await wait();
+assert(heard(late, 'shell x'), 'recap counts codex tool use');
 
 // /save works the same way as with Claude
 say(o, '/save'); await wait(500);

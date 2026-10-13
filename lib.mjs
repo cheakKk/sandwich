@@ -7,13 +7,10 @@ const entries = (memory, kind) =>
 
 // Quick review for someone joining: what got done, decided, handed off, and what the agent said last.
 // Deterministic on purpose (no model call, so joining never costs usage).
-export function recap({ events, memory }) {
+// tools is {name: count} and lastAgent the agent's last non-tool message; the server computes both in SQL
+// so a join never reads the whole event history.
+export function recap({ tools, lastAgent, memory }) {
   const out = [];
-  const tools = {};
-  for (const e of events) {
-    const m = e.user === 'agent' && e.text.match(/^\[tool\] (\w+)/);
-    if (m) tools[m[1]] = (tools[m[1]] || 0) + 1;
-  }
   const used = Object.entries(tools).map(([n, c]) => `${n} x${c}`).join(', ');
   if (used) out.push(`Agent tool uses: ${used}`);
   const done = entries(memory, 'done').slice(-5);
@@ -22,8 +19,7 @@ export function recap({ events, memory }) {
   if (decisions.length) out.push('Decisions:\n' + decisions.map((d) => `  ${d}`).join('\n'));
   const handoff = entries(memory, 'handoff').at(-1);
   if (handoff) out.push(`Last handoff: ${handoff}`);
-  const last = events.findLast((e) => e.user === 'agent' && !e.text.startsWith('[tool]'));
-  if (last) out.push(`Last agent message: ${last.text.length > 300 ? last.text.slice(0, 300) + '…' : last.text}`);
+  if (lastAgent) out.push(`Last agent message: ${lastAgent.length > 300 ? lastAgent.slice(0, 300) + '…' : lastAgent}`);
   return out.length ? `Quick review:\n${out.join('\n')}` : 'This session is new, nothing to review yet.';
 }
 

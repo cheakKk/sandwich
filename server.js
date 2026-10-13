@@ -34,6 +34,11 @@ db.exec('create table if not exists events(id integer primary key, ts text, user
 db.exec('create table if not exists tokens(token text primary key, kind text, role text, name text, expires integer)');
 db.exec('create table if not exists kv(k text primary key, v text)');
 const insert = db.prepare('insert into events(ts,user,text) values(?,?,?)');
+// Joining reads a bounded slice and two small aggregates, never the whole history.
+db.exec('create index if not exists events_user on events(user, id)');
+const recent = db.prepare('select ts,user,text from (select id,ts,user,text from events order by id desc limit ?) order by id');
+const toolCounts = db.prepare("select substr(text, 8, instr(substr(text, 8) || ' ', ' ') - 1) as name, count(*) as n from events where user = 'agent' and text like '[tool] %' group by name");
+const lastAgentText = db.prepare("select text from events where user = 'agent' and text not like '[tool] %' order by id desc limit 1");
 
 // Invite-only. The owner token is printed on the console at startup. An invite is single-use and expires;
 // redeeming it burns it and issues the member a session token. Only sha256(token) is stored.
@@ -87,6 +92,8 @@ const limited = (key, max = 30, windowMs = 10000) => {
   hits.set(key, recent);
   return recent.length > max;
 };
+
+setInterval(() => { const cutoff = Date.now() - 60000; for (const [k, v] of hits) if (v.at(-1) < cutoff) hits.delete(k); }, 60000).unref(); // forget idle identities
 
 // Tool approvals: owner and ops resolve them. Owner can pre-approve a tool with /allow.
 const allowed = new Set();
@@ -149,6 +156,10 @@ function agentSays(text) {
 // Codex: turns run one at a time, so messages that pile up during a turn go in as one batch. There is no
 // per-command approval (the SDK is non-interactive); the sandbox mode is the guardrail and only the owner changes it.
 let sandbox = 'read-only';
+// Codex can read files outside the project (possibly ~/.codex/auth.json, the host's login), and it has no per-command
+// approval, so members are only invited when the owner opts in with CODEX_TRUST_MEMBERS=1.
+const TRUST_MEMBERS = process.env.CODEX_TRUST_MEMBERS === '1';
+const codexWritable = () => AGENT === 'codex' && sandbox === 'workspace-write';
 async function runCodexAgent() {
   const codex = process.env.FAKE_CODEX ? fakeCodex() : new (await import('@openai/codex-sdk')).Codex(process.env.CODEX_API_KEY ? { apiKey: process.env.CODEX_API_KEY } : {});
   await runCodex({
@@ -221,6 +232,7 @@ function command(ws, c, line) {
     case 'who': return tell(ws, [...clients.values()].map((m) => `${m.name} (${m.role}${m.key === driver?.key ? ', driver' : ''})`).join(', ') + `; driver: ${driver?.name ?? 'open'}`);
     case 'invite': {
       if (!need(isOp(c))) return;
+      if (AGENT === 'codex' && !TRUST_MEMBERS) return tell(ws, 'codex mode is owner-only: a member could make Codex read any file your account can read, including its own login. Restart with CODEX_TRUST_MEMBERS=1 if you accept that.');
       const t = token();
       putToken(t, 'invite', 'member', null, Date.now() + INVITE_TTL_MS);
       return tell(ws, `invite link (single-use, ${Math.round(INVITE_TTL_MS / 3600000)}h): ${c.origin}/#${t}`);
@@ -253,10 +265,11 @@ function command(ws, c, line) {
       if (AGENT !== 'codex') return tell(ws, '/sandbox only applies when the server runs with AGENT=codex');
       if (arg !== 'read-only' && arg !== 'write') return tell(ws, `sandbox is ${sandbox}. Use /sandbox read-only or /sandbox write`);
       sandbox = arg === 'write' ? 'workspace-write' : 'read-only';
-      return emit('system', `codex sandbox is now ${sandbox} (set by ${c.name}), from the next turn`);
+      return emit('system', `codex sandbox is now ${sandbox} (set by ${c.name}), from the next turn.${codexWritable() ? ' Only the owner and ops can steer it while it can write.' : ''}`);
     }
     case 'allow': case 'deny': {
       if (!need(c.role === 'owner' && arg)) return;
+      if (AGENT === 'codex') return tell(ws, "approvals don't apply in codex mode (it can't pause to ask). Use /sandbox to control what it may do.");
       cmd === 'allow' ? allowed.add(arg) : allowed.delete(arg);
       return emit('system', `${arg} is ${cmd === 'allow' ? 'pre-approved' : 'back to asking'} (by ${c.name})`);
     }
@@ -343,9 +356,9 @@ wss.on('connection', (ws, req) => {
   clients.set(ws, c);
   send(ws, { type: 'role', role, name });
   send(ws, { type: 'status', busy });
-  const history = db.prepare('select ts,user,text from events order by id').all();
-  history.slice(-REPLAY).forEach((r) => send(ws, r)); // history replay
-  tell(ws, recap({ events: history, memory: existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '' })); // quick review for the joiner
+  recent.all(REPLAY).forEach((r) => send(ws, r)); // history replay
+  const tools = Object.fromEntries(toolCounts.all().map((r) => [r.name, r.n]));
+  tell(ws, recap({ tools, lastAgent: lastAgentText.get()?.text ?? null, memory: existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '' })); // quick review for the joiner
   if (isOp(c)) pending.forEach((p, id) => send(ws, { type: 'approval', id, tool: p.tool, input: p.input }));
   emit('system', `${name} joined`);
   ws.on('close', () => { clients.delete(ws); clearDriverIfGone(c.key); if (clients.size && !c.dead) emit('system', `${name} left`); });
@@ -372,6 +385,7 @@ wss.on('connection', (ws, req) => {
       if (limited(c.key)) return tell(ws, 'slow down: too many messages');
       if (m.text.startsWith('/')) return command(ws, c, m.text.trim());
       emit(c.name, m.text);
+      if (codexWritable() && !isOp(c)) return tell(ws, 'codex can write files right now, so only the owner and ops can steer it. Your message is visible to everyone.');
       if (driver && driver.key !== c.key) return tell(ws, `${driver.name} is driving; your message is visible but not sent to the agent`);
       push(`${c.name}: ${m.text}`);
     } catch (e) {
@@ -388,7 +402,7 @@ runAgent().catch((e) => {
   pending.clear();
 });
 server.listen(PORT, '127.0.0.1', () => {
-  if (AGENT === 'codex') console.log('codex mode: sandbox is read-only, but members can still make Codex read any file in this folder. Keep secrets out of it.');
+  if (AGENT === 'codex') console.log(`codex mode: members ${TRUST_MEMBERS ? 'ARE' : 'are NOT'} allowed (CODEX_TRUST_MEMBERS). Codex can read any file your OS account can read, not only this folder, and has no per-command approval.`);
   console.log(`owner link: ${tls ? 'https' : 'http'}://127.0.0.1:${PORT}/#${ownerToken}`);
   if (process.env.EXPOSE_TOKEN) console.log(`HOST_TOKEN=${ownerToken}`);
 });

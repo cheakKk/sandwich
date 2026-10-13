@@ -104,3 +104,44 @@ test('runCodex: an error item inside a turn is reported', async () => {
   const seen = await drive(fakeCodex([turn('t1', { type: 'item.completed', item: { type: 'error', message: 'sandbox denied write' } })]), ['a']);
   assert.ok(seen.error.some((m) => m.includes('sandbox denied write')));
 });
+
+// --- review fixes: lost saved sessions, and visible command failures ---
+test('runCodex: a saved thread that no longer exists is replaced by a fresh one, once', async () => {
+  const codex = fakeCodex([new Error('no such session'), turn('new1', say('hello again'))]);
+  const seen = await drive(codex, ['continue'], undefined, 'old');
+  assert.equal(codex.calls[0].id, 'old');
+  assert.equal(codex.calls[1].id, null, 'second attempt starts a new thread');
+  assert.deepEqual(seen.say, ['hello again']);
+  assert.deepEqual(seen.thread, ['new1']);
+  assert.ok(seen.error.some((m) => /new session/i.test(m)), 'chat is told the old session was lost');
+});
+
+test('runCodex: a resumed turn that fails with only a turn.failed event is also replaced', async () => {
+  const failed = [{ type: 'turn.failed', error: { message: 'thread not found' } }];
+  const codex = fakeCodex([failed, turn('new2', say('ok'))]);
+  const seen = await drive(codex, ['go'], undefined, 'gone');
+  assert.deepEqual(seen.say, ['ok']);
+  assert.equal(codex.calls.length, 2);
+});
+
+test('runCodex: a resumed turn that already did work is never retried', async () => {
+  const half = [cmd('rm -rf build'), { type: 'turn.failed', error: { message: 'boom' } }];
+  const codex = fakeCodex([half, turn('x', say('should not run'))]);
+  const seen = await drive(codex, ['go'], undefined, 'live');
+  assert.equal(codex.calls.length, 1, 'no second attempt, the command may have run');
+  assert.deepEqual(seen.say, []);
+  assert.ok(seen.error.some((m) => m.includes('boom')));
+});
+
+test('runCodex: a brand new thread that fails is not retried', async () => {
+  const codex = fakeCodex([new Error('not logged in'), turn('x', say('no'))]);
+  const seen = await drive(codex, ['go']);
+  assert.equal(codex.calls.length, 1);
+  assert.ok(seen.error.some((m) => m.includes('not logged in')));
+});
+
+test('describeItem: failed commands are reported with their exit code', () => {
+  const failed = describeItem({ type: 'item.completed', item: { type: 'command_execution', command: 'npm test', status: 'failed', exit_code: 2 } });
+  assert.equal(failed, '[tool] shell failed (exit 2): npm test');
+  assert.equal(describeItem({ type: 'item.completed', item: { type: 'command_execution', command: 'ls', status: 'completed', exit_code: 0 } }), null);
+});
