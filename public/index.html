@@ -30,13 +30,13 @@
   let busy = false;
   const showStatus = () => {
     const who = Object.keys(typers).filter((n) => typers[n] > Date.now());
-    status.textContent = [busy && 'agent is working', who.length && who.join(', ') + (who.length > 1 ? ' are' : ' is') + ' typing'].filter(Boolean).join(' · ');
+    document.getElementById('status').textContent = [busy && 'agent is working', who.length && who.join(', ') + (who.length > 1 ? ' are' : ' is') + ' typing'].filter(Boolean).join(' · ');
   };
   let lastTyped = 0;
   text.oninput = () => { if (ws.readyState === 1 && Date.now() - lastTyped > 1500) { lastTyped = Date.now(); ws.send(JSON.stringify({ type: 'typing' })); } };
   ws.onclose = (e) => {
     if (e.code === 4401) log.textContent = 'Sandwich is invite only. Invite links work once and expire. Ask the owner for a new one.';
-    if (e.code === 4403) log.textContent = 'You were removed from this session.';
+    if (e.code === 4403) log.textContent = e.reason || 'You were removed from this session.';
   };
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);

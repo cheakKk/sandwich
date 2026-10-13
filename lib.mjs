@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 // Pure helpers: the join recap shown to new users, and the safe wrapper for memory fed to the agent.
 
 const entries = (memory, kind) =>
@@ -74,7 +75,36 @@ export function originFrom(headers, tls) {
 
 // Paths the agent should never read without an op saying yes: databases, keys, tokens, this app's own data.
 export function sensitive(input) {
-  return /\.(db|sqlite3?)\b|\.env\b|\.pem\b|\.key\b|id_(rsa|ed25519)|auth\.json|\.ssh|\.sandwich|credentials|\.npmrc/i.test(JSON.stringify(input));
+  return /\.(db|sqlite3?|p12|pfx|ppk|kdbx|tfstate)\b|\.env|\.pem\b|\.key\b|id_(rsa|ed25519|ecdsa|dsa)|auth\.json|\.ssh|\.sandwich|credentials|\.npmrc|\.netrc|\.pgpass|\.pypirc|\.kube|\.docker|\.gnupg|\.htpasswd|bash_history|\.claude\.json|hosts\.yml/i.test(JSON.stringify(input));
+}
+
+// Read, Glob and Grep run without asking an op, so they get a hard boundary: visible files inside the project folder,
+// after resolving symlinks and junctions. Returns null if fine, else the reason. Other tools go to the ops instead.
+const realish = (p) => { // realpath of the nearest existing ancestor + the rest, so new files and links are both handled
+  const rest = [];
+  for (let cur = resolve(p); ; cur = dirname(cur)) {
+    try { return join(realpathSync.native(cur), ...rest.reverse()); } catch { /* keep walking up */ }
+    if (dirname(cur) === cur) return resolve(p);
+    rest.push(basename(cur));
+  }
+};
+const hidden = (rel) => rel.split(/[\\/]/).some((s) => s.startsWith('.') && s !== '.' && s !== '..');
+export function readScope(tool, input, cwd) {
+  if (!['Read', 'Glob', 'Grep'].includes(tool)) return null;
+  if (sensitive(input)) return 'that looks like a secret or a database';
+  const root = realish(cwd);
+  const paths = [input.file_path, input.path].filter(Boolean);
+  for (const p of paths) {
+    const rel = relative(root, realish(resolve(root, p)));
+    if (rel.startsWith('..') || isAbsolute(rel)) return 'outside the project folder';
+    if (hidden(rel)) return 'hidden files and folders are off limits';
+  }
+  for (const g of [tool === 'Glob' ? input.pattern : input.glob].filter(Boolean)) {
+    if (isAbsolute(g) && relative(root, realish(g)).startsWith('..')) return 'outside the project folder';
+    if (/(^|[\\/])\.\.([\\/]|$)/.test(g)) return 'outside the project folder';
+    if (hidden(g)) return 'hidden files and folders are off limits';
+  }
+  return null;
 }
 
 // The database holds session-token hashes, so it must not sit in the folder the agent works in.

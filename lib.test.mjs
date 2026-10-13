@@ -135,3 +135,62 @@ test('dbPath: the database lives outside the agent working directory unless over
   assert.equal(dbPath('/work/proj', { SANDWICH_DB: '/x/y.db' }, '/home/u'), '/x/y.db');
   assert.notEqual(dbPath('/work/a', {}, '/h'), dbPath('/work/b', {}, '/h'));
 });
+
+// --- readScope: Read/Glob/Grep may only touch visible files inside the project folder ---
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { readScope } from './lib.mjs';
+
+const proj = mkdtempSync(join(tmpdir(), 'scope-'));
+const outside = mkdtempSync(join(tmpdir(), 'outside-'));
+mkdirSync(join(proj, 'src'));
+writeFileSync(join(proj, 'src', 'a.js'), 'x');
+writeFileSync(join(outside, 'secret.txt'), 'x');
+symlinkSync(outside, join(proj, 'link'), 'junction');
+const scope = (tool, input) => readScope(tool, input, proj);
+
+test('readScope: ordinary project files are fine, including ones that do not exist yet', () => {
+  assert.equal(scope('Read', { file_path: 'src/a.js' }), null);
+  assert.equal(scope('Read', { file_path: join(proj, 'src', 'a.js') }), null);
+  assert.equal(scope('Read', { file_path: 'src/new.js' }), null);
+});
+
+test('readScope: nothing outside the project folder, however it is spelled', () => {
+  assert.ok(scope('Read', { file_path: '../x' }));
+  assert.ok(scope('Read', { file_path: join(outside, 'secret.txt') }));
+  assert.ok(scope('Read', { file_path: 'src/../../x' }));
+  assert.ok(scope('Grep', { pattern: 'x', path: '..' }));
+});
+
+test('readScope: a symlink or junction inside the project cannot lead outside', () => {
+  assert.ok(scope('Read', { file_path: 'link/secret.txt' }));
+  assert.ok(scope('Grep', { pattern: 'x', path: 'link' }));
+});
+
+test('readScope: hidden files and folders are off limits (.env, .git, .aws, .ssh)', () => {
+  for (const p of ['.env', 'sub/.git/config', '.aws/credentials', 'a/../.env', '.envrc', '.netrc']) assert.ok(scope('Read', { file_path: p }), p);
+});
+
+test('readScope: Glob patterns cannot escape or aim at hidden files', () => {
+  assert.equal(scope('Glob', { pattern: '**/*.js' }), null);
+  assert.equal(scope('Glob', { pattern: 'src/**' }), null);
+  for (const p of ['../*', '.e?v', '/etc/*', '**/.env', '.*', 'src/../../*']) assert.ok(scope('Glob', { pattern: p }), p);
+});
+
+test('readScope: Grep over the project is fine, but not into hidden files or outside', () => {
+  assert.equal(scope('Grep', { pattern: 'password', path: '.' }), null);
+  assert.equal(scope('Grep', { pattern: 'password' }), null);
+  assert.ok(scope('Grep', { pattern: 'x', path: '.', glob: '.env*' }));
+  assert.ok(scope('Grep', { pattern: 'x', path: outside }));
+});
+
+test('readScope: secret-looking names are still refused as a second layer', () => {
+  assert.ok(scope('Read', { file_path: 'config/server.pem' }));
+  assert.ok(scope('Read', { file_path: 'keys/id_ecdsa' }));
+  assert.ok(scope('Read', { file_path: 'backup/store.kdbx' }));
+});
+
+test('readScope: other tools are not its business', () => {
+  assert.equal(scope('Bash', { command: 'cat ../x' }), null);
+});

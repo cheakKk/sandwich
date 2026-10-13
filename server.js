@@ -12,7 +12,7 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
 import { fakeCodex, runCodex } from './codex.mjs';
-import { compactMemory, dbPath, originFrom, parseSummary, promptMemory, recap, sensitive } from './lib.mjs';
+import { compactMemory, dbPath, originFrom, parseSummary, promptMemory, readScope, recap } from './lib.mjs';
 
 const PORT = Number(process.env.PORT) || 3000;
 const AGENT = process.env.AGENT === 'codex' ? 'codex' : 'claude'; // whose login/plan powers the session
@@ -184,6 +184,7 @@ async function runAgent() {
     for await (const m of inputs()) {
       const c = m.message.content;
       emit('agent', `(fake) got: ${c.slice(0, 200)}`);
+      if (c.includes('die:')) return; // lets a test see what happens when the agent session ends
       if (c.includes('Start your reply with "SUMMARY:"')) agentSays('SUMMARY: fake summary line');
       if (c.includes('run:')) {
         const r = await askOps('Bash', { command: c.split('run:')[1].trim() });
@@ -194,17 +195,21 @@ async function runAgent() {
     return;
   }
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
-  // Read/Glob/Grep run without a prompt, except on secrets and databases, which are refused outright.
-  const guard = async (input) => sensitive(input.tool_input)
-    ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'That path looks like a secret or a database; Sandwich does not let the agent read it.' } }
-    : {};
+  // Read/Glob/Grep run unprompted but only inside the project folder (readScope). Every other tool, including shell
+  // commands the SDK would treat as read-only, is sent to the ops for approval.
+  const pre = (permissionDecision, permissionDecisionReason) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision, permissionDecisionReason } });
+  const guard = async (input) => {
+    const reason = readScope(input.tool_name, input.tool_input, process.cwd());
+    if (reason) return pre('deny', `Sandwich: ${reason}.`);
+    return ['Read', 'Glob', 'Grep'].includes(input.tool_name) ? {} : pre('ask');
+  };
   const q = query({
     prompt: inputs(),
     options: {
       cwd: process.cwd(),
       settingSources: [], // ignore the machine owner's personal allow-lists; roles decide here
       allowedTools: ['Read', 'Glob', 'Grep'],
-      hooks: { PreToolUse: [{ matcher: 'Read|Glob|Grep', hooks: [guard] }] },
+      hooks: { PreToolUse: [{ hooks: [guard] }] },
       canUseTool: async (tool, input) => {
         const r = await askOps(tool, input);
         return r.behavior === 'allow' ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: 'An op denied this tool use.' };
@@ -212,6 +217,7 @@ async function runAgent() {
     },
   });
   for await (const m of q) {
+    if (m.type === 'result' && m.is_error) emit('system', `agent error: ${m.subtype ?? 'unknown'}`);
     if (m.type === 'result' && !queue.length) setBusy(false);
     if (m.type !== 'assistant') continue;
     for (const b of m.message.content) {
@@ -349,6 +355,8 @@ wss.on('connection', (ws, req) => {
     }
   }
   if (!who) return ws.close(4401, 'invite required');
+  // An old session token must not outlive the trust decision: codex without CODEX_TRUST_MEMBERS is owner-only.
+  if (AGENT === 'codex' && !TRUST_MEMBERS && who.role !== 'owner') return ws.close(4403, 'codex mode is owner-only on this server');
   const { role } = who;
   let { name } = who;
   if (role === 'owner') { name = pick(clean(q.get('n'), 'owner'), sessionNames()); ownerNames.add(name); } // the owner chooses a name; members can't take it
@@ -394,13 +402,15 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-runAgent().catch((e) => {
-  emit('system', `agent stopped: ${e.message}. Restart the server to continue.`);
+// The agent ending, by crash or by finishing its stream, must never leave the chat waiting on nothing.
+function agentStopped() {
+  emit('system', 'the agent stopped. Restart the server to continue (details are in the server console).');
   setBusy(false);
   savePending = false;
   pending.forEach((p) => p.resolve({ behavior: 'deny' }));
   pending.clear();
-});
+}
+runAgent().then(agentStopped, (e) => { console.error('agent:', e); agentStopped(); });
 server.listen(PORT, '127.0.0.1', () => {
   if (AGENT === 'codex') console.log(`codex mode: members ${TRUST_MEMBERS ? 'ARE' : 'are NOT'} allowed (CODEX_TRUST_MEMBERS). Codex can read any file your OS account can read, not only this folder, and has no per-command approval.`);
   console.log(`owner link: ${tls ? 'https' : 'http'}://127.0.0.1:${PORT}/#${ownerToken}`);
