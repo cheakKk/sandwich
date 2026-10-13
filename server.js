@@ -1,47 +1,70 @@
-// Sandwich M2: one shared agent session, invite-only, Minecraft-style roles and slash commands.
+// Sandwich: one shared agent session, invite-only, Minecraft-style roles and slash commands.
 // Run: node server.js   (FAKE=1 node server.js to skip the real agent)
-// Roles: owner (created the project) > op (can approve tools, invite) > member (can chat/steer).
+// Roles: owner (created the project) > op (can approve tools, invite, kick) > member (can chat/steer).
 // Commands (type in the chat box): /invite /kick <name> /op <name> /deop <name> /allow <Tool> /deny <Tool>
 //                                  /handoff [name] /save /who /token /help
 import http from 'node:http';
 import https from 'node:https';
-import { randomBytes } from 'node:crypto';
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
-import { compactMemory, promptMemory, recap } from './lib.mjs';
+import { compactMemory, dbPath, originFrom, parseSummary, promptMemory, recap, sensitive } from './lib.mjs';
 
 const PORT = 3000;
 const MEMORY = 'PROJECT_MEMORY.md';
-const db = new DatabaseSync('sandwich.db');
+const MAX_TEXT = 4000; // one chat message
+const MAX_ENTRY = 2000; // one memory entry
+const MAX_MEMORY_BYTES = 1024 * 1024;
+const REPLAY = 300; // events replayed to a joiner
+
+// ponytail: log and keep serving rather than die on a bad frame; a supervisor/restart policy is the real fix.
+process.on('uncaughtException', (e) => console.error('uncaught:', e));
+process.on('unhandledRejection', (e) => console.error('unhandled:', e));
+
+// The DB holds session-token hashes, so it lives outside the folder the agent works in.
+const DB_FILE = dbPath(process.cwd(), process.env, homedir());
+mkdirSync(dirname(DB_FILE), { recursive: true });
+const db = new DatabaseSync(DB_FILE);
 db.exec('create table if not exists events(id integer primary key, ts text, user text, text text)');
+db.exec('create table if not exists tokens(token text primary key, kind text, role text, name text, expires integer)');
 const insert = db.prepare('insert into events(ts,user,text) values(?,?,?)');
 
-// Invite-only. The owner token is printed on the console at startup. An invite is single-use and
-// expires; redeeming it burns it and issues the member a session token (kept in the DB, revoked by /kick).
-db.exec('create table if not exists tokens(token text primary key, kind text, role text, name text, expires integer)');
+// Invite-only. The owner token is printed on the console at startup. An invite is single-use and expires;
+// redeeming it burns it and issues the member a session token. Only sha256(token) is stored.
 const token = () => randomBytes(16).toString('hex');
+const hash = (t) => createHash('sha256').update(String(t)).digest('hex');
 const ownerToken = token();
 const INVITE_TTL_MS = Number(process.env.INVITE_TTL_MS) || 24 * 3600 * 1000;
 const getToken = db.prepare('select kind, role, name, expires from tokens where token = ?');
-const putToken = db.prepare('insert into tokens(token, kind, role, name, expires) values(?,?,?,?,?)');
+const putToken = (t, kind, role, name, expires) => db.prepare('insert into tokens(token, kind, role, name, expires) values(?,?,?,?,?)').run(hash(t), kind, role, name, expires);
 const delToken = db.prepare('delete from tokens where token = ?');
 const setRole = db.prepare('update tokens set role = ? where token = ?');
+db.prepare("delete from tokens where kind = 'invite' and expires < ?").run(Date.now());
 // Who does this token belong to? Session tokens only; an unredeemed invite is not an identity.
 const whoIs = (t) => {
   if (t === ownerToken) return { role: 'owner', name: 'owner' };
-  const row = getToken.get(String(t));
+  const row = getToken.get(hash(t));
   return row?.kind === 'session' ? row : null;
 };
-// Names are identities in chat, /handoff and /kick, so they must be unique and the owner's name is reserved.
-let ownerName = 'owner';
+
+// Names are identities in chat, /handoff and /kick: unique (case-insensitive), and these are never available.
+const RESERVED = ['owner', 'agent', 'system'];
+const ownerNames = new Set();
 const sessionNames = () => db.prepare("select name from tokens where kind = 'session'").all().map((r) => r.name);
-const pick = (base, taken) => { let n = base, i = 1; while (taken.has(n)) n = base + ++i; return n; };
+const pick = (base, taken) => {
+  const t = new Set([...taken, ...RESERVED].map((n) => n.toLowerCase()));
+  let n = base, i = 1;
+  while (t.has(n.toLowerCase())) n = base + ++i;
+  return n;
+};
 const clean = (n, fallback) => String(n || '').replace(/\W/g, '').slice(0, 20) || fallback;
 const isOp = (c) => c.role === 'owner' || c.role === 'op';
 
-const clients = new Map(); // ws -> {name, role, token, host}
-const send = (ws, msg) => ws.send(JSON.stringify(msg));
+const clients = new Map(); // ws -> {name, role, token, key, origin, dead}
+const send = (ws, msg) => ws.readyState === 1 && ws.send(JSON.stringify(msg));
 const broadcast = (msg) => clients.forEach((_, ws) => send(ws, msg));
 const tell = (ws, text) => send(ws, { ts: new Date().toISOString(), user: 'system', text }); // private, not stored
 function emit(user, text) {
@@ -49,6 +72,18 @@ function emit(user, text) {
   insert.run(ev.ts, user, text);
   broadcast(ev);
 }
+const socketsOf = (key) => [...clients.entries()].filter(([, c]) => c.key === key);
+const byName = (name) => [...clients.entries()].find(([, c]) => c.name.toLowerCase() === String(name).toLowerCase());
+
+// Sliding-window rate limit per identity: a member can't flood the chat or burn the host's agent usage.
+const hits = new Map();
+const limited = (key, max = 30, windowMs = 10000) => {
+  const now = Date.now();
+  const recent = (hits.get(key) ?? []).filter((t) => now - t < windowMs);
+  recent.push(now);
+  hits.set(key, recent);
+  return recent.length > max;
+};
 
 // Tool approvals: owner and ops resolve them. Owner can pre-approve a tool with /allow.
 const allowed = new Set();
@@ -63,8 +98,14 @@ const askOps = (tool, input) =>
         emit('system', `waiting for an op to approve ${tool}`);
       });
 
-// Driver: null = open (anyone steers). Otherwise only the driver's messages reach the agent.
-let driver = null;
+// Driver: null = open (anyone steers). Otherwise only the driver's messages reach the agent. Tracked by identity key.
+let driver = null; // {key, name}
+const clearDriverIfGone = (key) => {
+  if (driver?.key === key && !socketsOf(key).length) {
+    emit('system', `${driver.name} left, the session is open to everyone`);
+    driver = null;
+  }
+};
 
 // Input queue: teammates' messages land here; the agent consumes them in order.
 const queue = [];
@@ -87,15 +128,19 @@ async function* inputs() {
 }
 
 // /save: the agent only writes the summary; compactMemory (lib.mjs) decides which log lines survive.
+// The write is tmp + rename, so a crash can't leave a half-written memory file.
 let savePending = false;
+let saveTimer;
 function agentSays(text) {
   emit('agent', text);
-  if (savePending && text.startsWith('SUMMARY:')) {
-    savePending = false;
-    const old = existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '';
-    writeFileSync(MEMORY, compactMemory(old, text.slice(8))); // read-modify-write is synchronous, so no appends are lost
-    emit('system', `${MEMORY} saved`);
-  }
+  const summary = savePending && parseSummary(text);
+  if (!summary) return;
+  savePending = false;
+  clearTimeout(saveTimer);
+  const old = existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '';
+  writeFileSync(MEMORY + '.tmp', compactMemory(old, summary)); // read-modify-write is synchronous, so no appends are lost
+  renameSync(MEMORY + '.tmp', MEMORY);
+  emit('system', `${MEMORY} saved`);
 }
 
 async function runAgent() {
@@ -113,12 +158,17 @@ async function runAgent() {
     return;
   }
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
+  // Read/Glob/Grep run without a prompt, except on secrets and databases, which are refused outright.
+  const guard = async (input) => sensitive(input.tool_input)
+    ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'That path looks like a secret or a database; Sandwich does not let the agent read it.' } }
+    : {};
   const q = query({
     prompt: inputs(),
     options: {
       cwd: process.cwd(),
       settingSources: [], // ignore the machine owner's personal allow-lists; roles decide here
-      allowedTools: ['Read', 'Glob', 'Grep'], // read-only runs unprompted
+      allowedTools: ['Read', 'Glob', 'Grep'],
+      hooks: { PreToolUse: [{ matcher: 'Read|Glob|Grep', hooks: [guard] }] },
       canUseTool: async (tool, input) => {
         const r = await askOps(tool, input);
         return r.behavior === 'allow' ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: 'An op denied this tool use.' };
@@ -135,19 +185,19 @@ async function runAgent() {
   }
 }
 
-const byName = (name) => [...clients.entries()].find(([, c]) => c.name === name);
 const HELP = '/who /token /handoff [name] /save | ops: /invite /kick <name> | owner: /op <name> /deop <name> /allow <Tool> /deny <Tool>';
 
 function command(ws, c, line) {
   const [cmd, arg] = line.slice(1).split(/\s+/);
   const need = (ok) => ok || (tell(ws, `/${cmd}: you don't have permission`), false);
+  const isDriver = driver?.key === c.key;
   switch (cmd) {
     case 'help': return tell(ws, HELP);
-    case 'who': return tell(ws, [...clients.values()].map((m) => `${m.name} (${m.role}${m.name === driver ? ', driver' : ''})`).join(', ') + `; driver: ${driver ?? 'open'}`);
+    case 'who': return tell(ws, [...clients.values()].map((m) => `${m.name} (${m.role}${m.key === driver?.key ? ', driver' : ''})`).join(', ') + `; driver: ${driver?.name ?? 'open'}`);
     case 'invite': {
       if (!need(isOp(c))) return;
       const t = token();
-      putToken.run(t, 'invite', 'member', null, Date.now() + INVITE_TTL_MS);
+      putToken(t, 'invite', 'member', null, Date.now() + INVITE_TTL_MS);
       return tell(ws, `invite link (single-use, ${Math.round(INVITE_TTL_MS / 3600000)}h): ${c.origin}/#${t}`);
     }
     case 'token': return tell(ws, `your token for the CLI/MCP (SANDWICH_TOKEN): ${c.token}`);
@@ -155,18 +205,23 @@ function command(ws, c, line) {
       if (!need(isOp(c))) return;
       const target = byName(arg);
       if (!target || isOp(target[1])) return tell(ws, `no kickable member named ${arg}`);
-      delToken.run(target[1].token);
-      target[0].close(4403, 'removed');
-      return emit('system', `${arg} was removed by ${c.name}`);
+      const { key, name } = target[1];
+      delToken.run(key);
+      for (const [w, m] of socketsOf(key)) { m.dead = true; clients.delete(w); w.close(4403, 'removed'); setTimeout(() => w.terminate(), 1000); }
+      clearDriverIfGone(key);
+      return emit('system', `${name} was removed by ${c.name}`);
     }
     case 'op': case 'deop': {
       if (!need(c.role === 'owner')) return;
       const target = byName(arg);
       if (!target || target[1].role === 'owner') return tell(ws, `no member named ${arg}`);
-      target[1].role = cmd === 'op' ? 'op' : 'member';
-      setRole.run(target[1].role, target[1].token); // survives reconnect
-      if (isOp(target[1])) pending.forEach((p, id) => send(target[0], { type: 'approval', id, tool: p.tool, input: p.input }));
-      return emit('system', `${arg} is now ${target[1].role}`);
+      const role = cmd === 'op' ? 'op' : 'member';
+      setRole.run(role, target[1].key); // survives reconnect
+      for (const [w, m] of socketsOf(target[1].key)) {
+        m.role = role;
+        if (isOp(m)) pending.forEach((p, id) => send(w, { type: 'approval', id, tool: p.tool, input: p.input }));
+      }
+      return emit('system', `${target[1].name} is now ${role}`);
     }
     case 'allow': case 'deny': {
       if (!need(c.role === 'owner' && arg)) return;
@@ -174,15 +229,20 @@ function command(ws, c, line) {
       return emit('system', `${arg} is ${cmd === 'allow' ? 'pre-approved' : 'back to asking'} (by ${c.name})`);
     }
     case 'handoff': {
-      if (!need(isOp(c) || c.name === driver)) return;
-      if (arg && !byName(arg)) return tell(ws, `no member named ${arg}`);
-      driver = arg ?? null;
-      return emit('system', driver ? `${c.name} handed the session to ${driver}` : `${c.name} opened the session to everyone`);
+      if (!need(isOp(c) || isDriver)) return;
+      const target = arg ? byName(arg) : null;
+      if (arg && !target) return tell(ws, `no member named ${arg}`);
+      driver = target ? { key: target[1].key, name: target[1].name } : null;
+      return emit('system', driver ? `${c.name} handed the session to ${driver.name}` : `${c.name} opened the session to everyone`);
     }
     case 'save': {
-      if (!need(isOp(c) || c.name === driver)) return;
+      if (!need(isOp(c) || isDriver)) return;
       emit('system', `${c.name} asked the agent to summarize for ${MEMORY}`);
       savePending = true;
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => {
+        if (savePending) { savePending = false; emit('system', `${MEMORY} was not changed: the agent sent no summary. Try /save again.`); }
+      }, 5 * 60 * 1000);
       const log = existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '';
       return push(`Summarize this project for the team in under 150 words: goal, current state, open tasks, next step. Do not use any tools. Start your reply with "SUMMARY:".\n\n${promptMemory(log)}`);
     }
@@ -191,7 +251,7 @@ function command(ws, c, line) {
 }
 
 const page = readFileSync(new URL('./public/index.html', import.meta.url));
-// Memory API for the CLI and MCP server: GET /memory, POST /memory {kind,text}. Bearer = any valid token.
+// Memory API for the CLI and MCP server: GET /memory, POST /memory {kind,text}. Bearer = a session or owner token.
 const KINDS = ['note', 'decision', 'task', 'done', 'handoff'];
 function memoryApi(req, res) {
   const who = whoIs(req.headers.authorization?.replace(/^Bearer /, ''));
@@ -199,14 +259,20 @@ function memoryApi(req, res) {
   if (!who) return out(401, 'session token required (/token in the chat)');
   if (req.method === 'GET') return out(200, existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '');
   if (req.method !== 'POST') return out(405, 'GET or POST');
+  if (limited('mem:' + hash(req.headers.authorization), 200)) return out(429, 'slow down');
   let body = '';
-  req.on('data', (d) => { body += d; if (body.length > 65536) req.destroy(); });
+  req.on('error', () => {});
+  req.on('data', (d) => { body += d; if (body.length > 65536) { out(413, 'too large'); req.destroy(); } });
   req.on('end', () => {
+    if (res.writableEnded) return;
     let m;
     try { m = JSON.parse(body); } catch { return out(400, 'bad json'); }
-    if (!KINDS.includes(m.kind) || typeof m.text !== 'string' || !m.text.trim()) return out(400, `kind (${KINDS}) and text required`);
-    const author = String(m.author || who.name).replace(/\W/g, '').slice(0, 20);
-    appendFileSync(MEMORY, `- [${new Date().toISOString()}] ${m.kind} (${author}): ${m.text.replace(/\n+/g, ' ')}\n`);
+    if (!m || typeof m !== 'object' || !KINDS.includes(m.kind) || typeof m.text !== 'string' || !m.text.trim() || m.text.length > MAX_ENTRY) return out(400, `kind (${KINDS}) and text (max ${MAX_ENTRY} chars) required`);
+    if (existsSync(MEMORY) && statSync(MEMORY).size > MAX_MEMORY_BYTES) return out(413, 'memory is full, run /save to compact it');
+    const author = clean(who.name, 'member'); // always the session's own name; the request can't claim another
+    try {
+      appendFileSync(MEMORY, `- [${new Date().toISOString()}] ${m.kind} (${author}): ${m.text.replace(/\n+/g, ' ')}\n`);
+    } catch (e) { return out(500, 'could not write memory'); }
     emit('system', `${author} added a ${m.kind} to ${MEMORY}`);
     out(200, 'ok');
   });
@@ -214,24 +280,25 @@ function memoryApi(req, res) {
 // HTTPS: set SANDWICH_CERT and SANDWICH_KEY (PEM file paths) to terminate TLS here, or put a TLS proxy/tunnel
 // in front (it sends x-forwarded-proto/host, which invite links follow). Without either, plain http is localhost-only.
 const tls = process.env.SANDWICH_CERT && process.env.SANDWICH_KEY;
-const handler = (req, res) => (req.url.startsWith('/memory') ? memoryApi(req, res) : res.setHeader('content-type', 'text/html').end(page));
+const handler = (req, res) => (req.url.split('?')[0] === '/memory' ? memoryApi(req, res) : res.setHeader('content-type', 'text/html').end(page));
 const server = tls
   ? https.createServer({ cert: readFileSync(process.env.SANDWICH_CERT), key: readFileSync(process.env.SANDWICH_KEY) }, handler)
   : http.createServer(handler);
-const originOf = (req) => `${req.headers['x-forwarded-proto'] || (tls ? 'https' : 'http')}://${req.headers['x-forwarded-host'] || req.headers.host}`;
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 });
 
 wss.on('connection', (ws, req) => {
-  const q = new URL(req.url, 'http://x').searchParams;
+  ws.on('error', () => {}); // protocol violations (bad frames, oversize) close this socket, never the server
+  let q;
+  try { q = new URL(req.url, 'http://x').searchParams; } catch { return ws.close(4401, 'bad request'); }
   let t = q.get('t');
   let who = whoIs(t);
-  const row = who ? null : getToken.get(String(t));
+  const row = who ? null : getToken.get(hash(t));
   if (row?.kind === 'invite') {
-    delToken.run(t); // single-use, burned whether or not it had expired
+    delToken.run(hash(t)); // single-use, burned whether or not it had expired
     if (row.expires > Date.now()) {
-      const chosen = pick(clean(q.get('n'), 'guest'), new Set([...sessionNames(), ownerName, 'owner', ...[...clients.values()].map((m) => m.name)]));
+      const chosen = pick(clean(q.get('n'), 'guest'), [...sessionNames(), ...ownerNames, ...[...clients.values()].map((m) => m.name)]);
       t = token();
-      putToken.run(t, 'session', 'member', chosen, null);
+      putToken(t, 'session', 'member', chosen, null);
       who = { role: 'member', name: chosen };
       send(ws, { type: 'session', token: t });
     }
@@ -239,36 +306,55 @@ wss.on('connection', (ws, req) => {
   if (!who) return ws.close(4401, 'invite required');
   const { role } = who;
   let { name } = who;
-  if (role === 'owner') ownerName = name = pick(clean(q.get('n'), 'owner'), new Set(sessionNames())); // the owner chooses a name; members can't take it
-  const c = { name, role, token: t, origin: originOf(req) };
+  if (role === 'owner') { name = pick(clean(q.get('n'), 'owner'), sessionNames()); ownerNames.add(name); } // the owner chooses a name; members can't take it
+  const c = { name, role, token: t, key: role === 'owner' ? 'owner' : hash(t), origin: originFrom(req.headers, !!tls), dead: false };
   clients.set(ws, c);
   send(ws, { type: 'role', role, name });
   send(ws, { type: 'status', busy });
   const history = db.prepare('select ts,user,text from events order by id').all();
-  history.forEach((r) => send(ws, r)); // history replay
+  history.slice(-REPLAY).forEach((r) => send(ws, r)); // history replay
   tell(ws, recap({ events: history, memory: existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '' })); // quick review for the joiner
   if (isOp(c)) pending.forEach((p, id) => send(ws, { type: 'approval', id, tool: p.tool, input: p.input }));
   emit('system', `${name} joined`);
-  ws.on('close', () => { clients.delete(ws); if (clients.size) emit('system', `${name} left`); });
+  ws.on('close', () => { clients.delete(ws); clearDriverIfGone(c.key); if (clients.size && !c.dead) emit('system', `${name} left`); });
+  let lastTyping = 0;
   ws.on('message', (raw) => {
-    let m;
-    try { m = JSON.parse(raw); } catch { return; }
-    if (m.type === 'typing') return clients.forEach((_, w) => w !== ws && send(w, { type: 'typing', name: c.name }));
-    if (m.type === 'decide' && isOp(c) && pending.has(m.id)) {
-      const p = pending.get(m.id);
-      pending.delete(m.id);
-      p.resolve({ behavior: m.allow ? 'allow' : 'deny' });
-      return broadcast({ type: 'resolved', id: m.id, allow: !!m.allow });
+    try {
+      let m;
+      try { m = JSON.parse(raw); } catch { return; }
+      if (c.dead || !m || typeof m !== 'object' || Array.isArray(m)) return;
+      if (m.type === 'typing') {
+        if (Date.now() - lastTyping < 1000) return;
+        lastTyping = Date.now();
+        return clients.forEach((_, w) => w !== ws && send(w, { type: 'typing', name: c.name }));
+      }
+      if (m.type === 'decide') {
+        if (!isOp(c) || typeof m.id !== 'string' || !pending.has(m.id)) return;
+        const p = pending.get(m.id);
+        pending.delete(m.id);
+        p.resolve({ behavior: m.allow === true ? 'allow' : 'deny' });
+        return broadcast({ type: 'resolved', id: m.id, allow: m.allow === true });
+      }
+      if (typeof m.text !== 'string' || !m.text.trim()) return;
+      if (m.text.length > MAX_TEXT) return tell(ws, `message too long (max ${MAX_TEXT} characters)`);
+      if (limited(c.key)) return tell(ws, 'slow down: too many messages');
+      if (m.text.startsWith('/')) return command(ws, c, m.text.trim());
+      emit(c.name, m.text);
+      if (driver && driver.key !== c.key) return tell(ws, `${driver.name} is driving; your message is visible but not sent to the agent`);
+      push(`${c.name}: ${m.text}`);
+    } catch (e) {
+      console.error('message handler:', e);
     }
-    if (typeof m.text !== 'string' || !m.text.trim()) return;
-    if (m.text.startsWith('/')) return command(ws, c, m.text.trim());
-    emit(c.name, m.text);
-    if (driver && driver !== c.name) return tell(ws, `${driver} is driving; your message is visible but not sent to the agent`);
-    push(`${c.name}: ${m.text}`);
   });
 });
 
-runAgent().catch((e) => emit('system', `agent died: ${e.message}`));
+runAgent().catch((e) => {
+  emit('system', `agent stopped: ${e.message}. Restart the server to continue.`);
+  setBusy(false);
+  savePending = false;
+  pending.forEach((p) => p.resolve({ behavior: 'deny' }));
+  pending.clear();
+});
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`owner link: ${tls ? 'https' : 'http'}://127.0.0.1:${PORT}/#${ownerToken}`);
   if (process.env.EXPOSE_TOKEN) console.log(`HOST_TOKEN=${ownerToken}`);

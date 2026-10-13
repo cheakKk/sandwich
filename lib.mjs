@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 // Pure helpers: the join recap shown to new users, and the safe wrapper for memory fed to the agent.
 
 const entries = (memory, kind) =>
@@ -48,12 +50,38 @@ export function promptMemory(memory, max = 8000) {
 }
 
 // Rewrites the memory file for /save. The agent only supplies the summary text; which log lines
-// survive is decided here, so progress (done, decision, handoff) can never be lost to a bad rewrite.
-const PROTECTED = /^- \[[^\]]*\] (done|decision|handoff) \(/;
+// survive is decided here, so progress (done, decision, handoff) and open tasks can never be lost to a bad rewrite.
+// Only notes get trimmed, oldest first, but at least half the cap is always kept for them.
+const PROTECTED = /^- \[[^\]]*\] (done|decision|handoff|task) \(/;
 export function compactMemory(memory, summary, maxEntries = 100) {
   const { entries } = split(memory);
-  let drop = entries.length - maxEntries;
-  const kept = entries.filter((e) => drop <= 0 || PROTECTED.test(e) || (drop--, false));
+  const protectedCount = entries.filter((e) => PROTECTED.test(e)).length;
+  let drop = entries.length - protectedCount - Math.max(Math.floor(maxEntries / 2), maxEntries - protectedCount);
+  const kept = entries.filter((e) => PROTECTED.test(e) || drop-- <= 0);
   const safe = summary.slice(0, 2000).trim().split('\n').map((l) => (isEntry(l) ? ' ' + l : l)).join('\n');
   return `# Summary\n${safe}\n\n## Log\n${kept.join('\n')}\n`;
+}
+
+// The agent was told to answer "SUMMARY: ...". Tolerate markdown and a short preamble; reject empty.
+export function parseSummary(text) {
+  const m = text.match(/^[\s*_#>]*SUMMARY[*_\s]*:[*_\s]*([\s\S]*)$/im);
+  return m?.[1].trim() || null;
+}
+
+// Where the server is reached from. Behind a proxy the forwarded values win, but only well-formed ones.
+export function originFrom(headers, tls) {
+  const first = (v) => String(v ?? '').split(',')[0].trim();
+  const proto = first(headers['x-forwarded-proto']);
+  const host = first(headers['x-forwarded-host']);
+  return `${/^https?$/.test(proto) ? proto : tls ? 'https' : 'http'}://${/^[\w.:[\]-]+$/.test(host) ? host : headers.host}`;
+}
+
+// Paths the agent should never read without an op saying yes: databases, keys, tokens, this app's own data.
+export function sensitive(input) {
+  return /\.(db|sqlite3?)\b|\.env\b|\.pem\b|\.key\b|id_(rsa|ed25519)|auth\.json|\.ssh|\.sandwich|credentials|\.npmrc/i.test(JSON.stringify(input));
+}
+
+// The database holds session-token hashes, so it must not sit in the folder the agent works in.
+export function dbPath(cwd, env, home) {
+  return env.SANDWICH_DB || join(home, '.sandwich', createHash('sha1').update(cwd).digest('hex').slice(0, 12) + '.db');
 }

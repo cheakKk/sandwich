@@ -1,5 +1,5 @@
 // Sandwich MCP server (stdio). Lets plain Claude Code / Codex read and write the shared project memory.
-// Register: claude mcp add sandwich -e SANDWICH_TOKEN=<invite token> -e SANDWICH_NAME=<you> -- node mcp.mjs
+// Register: claude mcp add sandwich -e SANDWICH_TOKEN=<your token from /token> -- node mcp.mjs
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';

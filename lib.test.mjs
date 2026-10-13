@@ -71,11 +71,17 @@ test('compactMemory: never drops done, decision or handoff, even over the cap', 
   for (const k of ['done', 'decision', 'handoff']) for (const i of [1, 2, 3]) assert.ok(out.includes(`${k}${i}`), `${k}${i} kept`);
 });
 
-test('compactMemory: drops the oldest notes and tasks first', () => {
+test('compactMemory: drops the oldest notes first, keeps open tasks', () => {
   const memory = [line('note', 'n1'), line('task', 't1'), line('note', 'n2'), line('done', 'd1'), line('note', 'n3')].join('\n');
-  const out = compactMemory(memory, 'sum', 3);
-  assert.ok(!out.includes('n1') && !out.includes('t1'));
-  assert.ok(out.includes('n2') && out.includes('d1') && out.includes('n3'));
+  const out = compactMemory(memory, 'sum', 4);
+  assert.ok(!out.includes('n1'));
+  assert.ok(out.includes('t1') && out.includes('n2') && out.includes('d1') && out.includes('n3'));
+});
+
+test('compactMemory: many protected lines never wipe every note', () => {
+  const memory = [...Array.from({ length: 30 }, (_, i) => line('done', `d${i}`)), ...Array.from({ length: 30 }, (_, i) => line('note', `n${i}`))].join('\n');
+  const out = compactMemory(memory, 'sum', 40);
+  assert.ok(out.includes('n29') && out.includes('n10') && !out.includes('n0 ') && out.includes('d0'));
 });
 
 test('compactMemory: replaces the old summary, keeps entry lines verbatim and in order', () => {
@@ -101,4 +107,36 @@ test('promptMemory: the summary header survives the size cap', () => {
   const memory = '# Summary\nGOAL: ship login\n\n' + Array.from({ length: 200 }, (_, i) => line('note', `n${i} ${'x'.repeat(50)}`)).join('\n');
   const p = promptMemory(memory, 2000);
   assert.ok(p.includes('GOAL: ship login') && p.includes('n199') && !p.includes('n0 '));
+});
+
+import { dbPath, originFrom, parseSummary, sensitive } from './lib.mjs';
+
+test('parseSummary: accepts plain, markdown-wrapped and preambled summaries', () => {
+  assert.equal(parseSummary('SUMMARY: ship login'), 'ship login');
+  assert.equal(parseSummary('**SUMMARY:** ship login'), 'ship login');
+  assert.equal(parseSummary('Sure, here you go.\n\nSummary: ship login\nnext: tests'), 'ship login\nnext: tests');
+});
+
+test('parseSummary: empty or missing summary is rejected', () => {
+  assert.equal(parseSummary('SUMMARY:   '), null);
+  assert.equal(parseSummary('I cannot do that'), null);
+});
+
+test('originFrom: follows a single forwarded https host, ignores junk', () => {
+  assert.equal(originFrom({ host: 'localhost:3000' }, false), 'http://localhost:3000');
+  assert.equal(originFrom({ host: 'localhost:3000' }, true), 'https://localhost:3000');
+  assert.equal(originFrom({ host: 'x', 'x-forwarded-proto': 'https, http', 'x-forwarded-host': 'a.example, b.example' }, false), 'https://a.example');
+  assert.equal(originFrom({ host: 'x', 'x-forwarded-proto': 'javascript', 'x-forwarded-host': 'a b/c' }, false), 'http://x');
+});
+
+test('sensitive: flags databases, secrets and keys but not normal source files', () => {
+  for (const p of ['sandwich.db', '/home/u/.sandwich/ab.db', '.env', 'server.pem', 'id_rsa', '.ssh/config', 'auth.json']) assert.ok(sensitive({ file_path: p }), p);
+  for (const p of ['src/app.js', 'README.md', 'lib.mjs']) assert.ok(!sensitive({ file_path: p }), p);
+});
+
+test('dbPath: the database lives outside the agent working directory unless overridden', () => {
+  const p = dbPath('/work/proj', {}, '/home/u');
+  assert.ok(/home.u.\.sandwich/.test(p) && !p.includes('proj'));
+  assert.equal(dbPath('/work/proj', { SANDWICH_DB: '/x/y.db' }, '/home/u'), '/x/y.db');
+  assert.notEqual(dbPath('/work/a', {}, '/h'), dbPath('/work/b', {}, '/h'));
 });

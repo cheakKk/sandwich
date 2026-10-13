@@ -47,7 +47,10 @@
     else if (m.type === 'session') history.replaceState(null, '', '#' + m.token); // the invite is burned; keep our own session so refresh works
     else if (m.type === 'approval') {
       const d = document.createElement('div'); d.className = 'ask'; asks[m.id] = d;
-      d.append('Agent wants to use ' + m.tool + ': ' + JSON.stringify(m.input).slice(0, 300) + ' ');
+      const full = document.createElement('pre'); // the whole input, never cut: the harmful part can sit after a long harmless prefix
+      full.style.cssText = 'max-height:14em;overflow:auto;white-space:pre-wrap;margin:6px 0';
+      full.textContent = JSON.stringify(m.input, null, 2);
+      d.append('Agent wants to use ' + m.tool + ':', full);
       for (const ok of [true, false]) {
         const b = document.createElement('button'); b.textContent = ok ? 'Allow' : 'Deny';
         b.onclick = () => ws.send(JSON.stringify({ type: 'decide', id: m.id, allow: ok }));

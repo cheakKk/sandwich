@@ -10,7 +10,7 @@ export async function getContext() {
 }
 
 export async function addMemory(kind, text) {
-  const r = await fetch(`${URL_}/memory`, { method: 'POST', headers, body: JSON.stringify({ kind, text, author: process.env.SANDWICH_NAME }) });
+  const r = await fetch(`${URL_}/memory`, { method: 'POST', headers, body: JSON.stringify({ kind, text }) });
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
 }
 
