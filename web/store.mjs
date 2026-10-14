@@ -5,7 +5,9 @@ import { randomUUID } from 'node:crypto';
 import { hashToken } from './crypto.mjs';
 
 const WEB_TTL = 14 * 24 * 3600 * 1000;
+export const PROXY_TOKEN_TTL = 12 * 3600 * 1000; // from last use, so a long-running worker keeps its access
 export const SID_RE = /^s[0-9a-f]{16}$/;
+const COLUMNS = new Set(['name', 'agent', 'mode', 'source', 'status', 'budget_usd', 'key_sealed', 'port', 'dir', 'last_active']);
 const RESERVED = ['owner', 'agent', 'system', 'control-plane'];
 
 export function createStore(file = ':memory:') {
@@ -66,12 +68,13 @@ export function createStore(file = ':memory:') {
     session: (id) => q('select * from sessions where id = ?').get(id),
     sessionsOf: (userId) => q('select s.* from sessions s join members m on m.session_id = s.id and m.sub = ? and m.revoked = 0 order by s.created desc').all(userId),
     update(id, fields) {
-      const keys = Object.keys(fields).filter((k) => /^[a-z_]+$/.test(k));
+      const keys = Object.keys(fields).filter((k) => COLUMNS.has(k));
       q(`update sessions set ${keys.map((k) => k + ' = ?').join(', ')} where id = ?`).run(...keys.map((k) => fields[k] ?? null), id);
     },
     deleteSession: (id) => q('delete from sessions where id = ?').run(id),
     // an account goes only after its sessions are gone (sessions.owner_id has no cascade on purpose); web logins cascade
-    deleteUser: (id) => q('delete from users where id = ?').run(id),
+    deleteUser(id) { q('delete from members where sub = ?').run(id); q('delete from users where id = ?').run(id); }, // also their name in other people's sessions
+    endWebSessionsOf: (userId) => q('delete from websessions where user_id = ?').run(userId),
     // deleted rows are overwritten in place (secure_delete); this also empties the write-ahead log that could still hold old copies
     scrub: () => db.exec('pragma wal_checkpoint(TRUNCATE)'),
     allSessions: () => q('select * from sessions').all(),
@@ -101,7 +104,7 @@ export function createStore(file = ':memory:') {
       const inv = q('select * from invites where hash = ?').get(h);
       if (!inv) return null;
       q('delete from invites where hash = ?').run(h); // burned whether or not it had expired
-      if (inv.expires <= now() || !s.session(inv.session_id)) return null;
+      if (inv.expires <= now() || !s.session(inv.session_id) || s.session(inv.session_id).status === 'deleting') return null;
       const sub = 'g' + randomUUID().replace(/-/g, '');
       const finalName = s.addMember(inv.session_id, { sub, name, role: inv.role });
       q('insert into guests values(?,?,?,?)').run(hashToken(guestToken), inv.session_id, sub, now() + guestTtlMs);
@@ -127,7 +130,9 @@ export function createStore(file = ':memory:') {
     mintProxyToken(sessionId, token, ttlMs) { q('insert into proxy_tokens values(?,?,?)').run(hashToken(token), sessionId, now() + ttlMs); },
     sessionByProxyToken(token) {
       const r = token && q('select session_id, expires from proxy_tokens where hash = ?').get(hashToken(token));
-      return r && r.expires > now() ? s.session(r.session_id) : null;
+      if (!r || r.expires <= now()) return null;
+      if (r.expires - now() < PROXY_TOKEN_TTL / 2) q('update proxy_tokens set expires = ? where hash = ?').run(now() + PROXY_TOKEN_TTL, hashToken(token));
+      return s.session(r.session_id);
     },
     addLedger: (sessionId, tin, tout, usd) => q('insert into ledger(session_id, ts, tokens_in, tokens_out, usd) values(?,?,?,?,?)').run(sessionId, now(), tin, tout, usd),
     spentUsd: (sessionId) => q('select coalesce(sum(usd), 0) as n from ledger where session_id = ?').get(sessionId).n,

@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sign } from '../assert.mjs';
 import { deriveKey, newToken } from './crypto.mjs';
+import { PROXY_TOKEN_TTL } from './store.mjs';
 import { importRepo } from './importer.mjs';
 
 const WORKER = fileURLToPath(new URL('../server.js', import.meta.url));
@@ -32,44 +33,70 @@ export function createLocalDriver({ store, masterKey, baseDir, proxyUrl, workerE
   const running = new Map(); // sessionId -> { child, port }
   const dirs = (id) => ({ work: join(baseDir, id, 'work'), data: join(baseDir, id, 'data') });
 
-  async function start(session) {
-    if (store.session(session.id)?.status === 'deleting') throw new Error('session is being deleted'); // nothing may wake a session mid-delete
-    if (running.has(session.id)) return running.get(session.id);
+  const starting = new Map(); // sessionId -> the start in flight, so two wakes at once share one worker
+  const gone = (id) => { const r = store.session(id); return !r || r.status === 'deleting'; };
+
+  // One worker per session. Callers arriving while a start is in flight get the same promise (two tabs, two sockets, the dashboard).
+  function start(session) {
+    if (gone(session.id)) return Promise.reject(new Error('session is being deleted')); // nothing may wake a session mid-delete
+    if (running.has(session.id)) return Promise.resolve(running.get(session.id));
+    if (!starting.has(session.id)) starting.set(session.id, boot(session).finally(() => starting.delete(session.id)));
+    return starting.get(session.id);
+  }
+
+  async function boot(session) {
     const { work, data } = dirs(session.id);
+    // Every await below is a place a delete can land. After each one we check again, and give up cleanly if the session is gone.
+    const stillWanted = () => { if (gone(session.id)) throw new Error('session is being deleted'); };
     // A repo is imported once, before the worker exists. The marker lives beside work/ (not in it), so a restart never re-imports over
     // the team's changes, and a start interrupted mid-import (no marker) begins again from nothing.
     const marker = join(baseDir, session.id, 'imported');
     if (session.source !== 'empty' && !existsSync(marker)) {
       rmSync(work, { recursive: true, force: true });
       await importRepo(session.source, work, { fetch: fetchFn });
+      stillWanted();
       writeFileSync(marker, '');
     }
     mkdirSync(work, { recursive: true }); mkdirSync(data, { recursive: true });
     const port = await freePort();
+    stillWanted();
     const proxyToken = newToken(32);
-    store.mintProxyToken(session.id, proxyToken, 12 * 3600 * 1000);
+    store.mintProxyToken(session.id, proxyToken, PROXY_TOKEN_TTL);
     const child = spawn(process.execPath, [WORKER], { cwd: work, env: workerEnvFor({ env, session, port, data, masterKey, proxyUrl, proxyToken, extra: workerEnv }), stdio: ['ignore', 'pipe', 'pipe'] });
+    let spawnError = null;
+    child.on('error', (e) => { spawnError = e; }); // without a listener a failed spawn would crash the whole control plane
     child.stdout.on('data', () => {}); // drained, not logged: worker output can contain chat text
     child.stderr.on('data', (d) => log(`worker ${session.id}:`, String(d).slice(0, 300)));
     child.on('exit', () => { if (running.get(session.id)?.child === child) running.delete(session.id); });
     const entry = { child, port };
     running.set(session.id, entry);
-    for (let i = 0; i < 80 && !(await reachable(port)); i++) {
-      if (child.exitCode !== null) { running.delete(session.id); throw new Error('worker exited during start'); }
+    const fail = (msg) => { child.kill('SIGKILL'); if (running.get(session.id) === entry) running.delete(session.id); throw new Error(msg); };
+    let up = false;
+    for (let i = 0; i < 80 && !up; i++) {
+      if (spawnError || child.exitCode !== null) fail('worker exited during start'); // before reachable(): a dead worker's port may be someone else's
+      if (await reachable(port)) { up = true; break; }
       await new Promise((r) => setTimeout(r, 150));
     }
-    if (!(await reachable(port))) { child.kill(); running.delete(session.id); throw new Error('worker did not start'); }
+    if (!up) fail('worker did not start');
+    if (child.exitCode !== null) fail('worker exited during start');
+    if (gone(session.id)) fail('session is being deleted');
     return entry;
   }
 
-  const stop = (id) => new Promise((resolve) => {
+  // Waits for a start in flight (it will notice the delete and stop itself), then kills the worker: politely, then for good.
+  const stop = async (id) => {
+    await starting.get(id)?.catch(() => {});
     const e = running.get(id);
-    if (!e) return resolve();
+    if (!e) return;
     running.delete(id);
-    e.child.once('exit', resolve);
-    e.child.kill();
-    setTimeout(resolve, 3000);
-  });
+    await new Promise((resolve) => {
+      let hard;
+      const t = setTimeout(() => { hard = setTimeout(resolve, 2000); e.child.kill('SIGKILL'); }, 3000);
+      e.child.once('exit', () => { clearTimeout(t); clearTimeout(hard); resolve(); });
+      if (e.child.exitCode !== null) { clearTimeout(t); return resolve(); }
+      e.child.kill();
+    });
+  };
   const ids = () => (existsSync(baseDir) ? readdirSync(baseDir) : []);
   const wipe = async (id) => { rmSync(join(baseDir, id), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); };
 

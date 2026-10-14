@@ -2,6 +2,7 @@
 // same-origin JSON only (see csrfOk). Unknown or not-yours sessions both answer 404, so ids cannot be probed.
 import { box, hashToken, newToken, pkceChallenge, sameString } from './crypto.mjs';
 import { ImportError, parseRepo } from './importer.mjs';
+import { createLimiter } from './limit.mjs';
 
 const MAX_BODY = 16 * 1024;
 const KEY_RE = /^sk-ant-[A-Za-z0-9_-]{20,300}$/;
@@ -12,13 +13,7 @@ export function createApp({ store, boxKey, config, providers, driver, lifecycle,
   const cookieName = (n) => (config.secure ? '__Host-' + n : n);
   const PRE = cookieName('swpre'), WEB = cookieName('sw');
 
-  const hits = new Map();
-  const limited = (key, max, windowMs) => {
-    const t = Date.now(), h = (hits.get(key) ?? []).filter((x) => x > t - windowMs);
-    h.push(t); hits.set(key, h);
-    if (hits.size > 5000) for (const [k, v] of hits) if (!v.some((x) => x > t - windowMs)) hits.delete(k);
-    return h.length > max;
-  };
+  const limited = createLimiter();
   const ipOf = (req) => (config.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',').at(-1).trim() : '') || req.socket.remoteAddress;
 
   const cookiesOf = (req) => Object.fromEntries(String(req.headers.cookie ?? '').split(/;\s*/).map((c) => { const i = c.indexOf('='); return i < 0 ? [] : [c.slice(0, i), c.slice(i + 1)]; }).filter((p) => p[0]));
@@ -112,11 +107,10 @@ export function createApp({ store, boxKey, config, providers, driver, lifecycle,
       const id = store.createSession({ ownerId: user.id, name: b.name, source, mode: b.mode ?? 'guarded', budgetUsd: budget });
       store.update(id, { key_sealed: box(boxKey, b.key, id) }); // boxed to the key proxy's public key at once; this process cannot read it back
       try { await driver.start(store.session(id)); store.update(id, { status: 'running', last_active: Date.now() }); } catch (e) {
-        if (e instanceof ImportError) { // the visitor's repo was the problem: say why, and leave no half-made session (or its key) behind
-          await lifecycle.deleteSession(id);
-          return fail(res, 422, 'could not import the repo: ' + e.message);
-        }
-        log('start failed:', e.message); store.update(id, { status: 'failed' }); return fail(res, 502, 'could not start the session');
+        // Any failed start leaves no half-made session behind, and no sealed key: the host just tries again.
+        await lifecycle.deleteSession(id);
+        if (e instanceof ImportError) return fail(res, 422, 'could not import the repo: ' + e.message); // the repo was the problem: say why
+        log('start failed:', e.message); return fail(res, 502, 'could not start the session');
       }
       return send(res, 201, publicSession(store.session(id), store.member(id, user.id)));
     }

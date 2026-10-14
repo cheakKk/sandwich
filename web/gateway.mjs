@@ -7,12 +7,15 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { sign } from '../assert.mjs';
 import { serveStatic } from '../static.mjs';
 import { deriveKey, newToken } from './crypto.mjs';
+import { createLimiter } from './limit.mjs';
+import { SID_RE } from './store.mjs';
 
 const SITE = fileURLToPath(new URL('../site/', import.meta.url));
-const SID = /^s[0-9a-f]{16}$/;
 const MAX_BODY = 4096;
 const GATEWAY_TTL = 30 * 24 * 3600 * 1000;
 const MAX_SOCKETS_PER_IP = 20;
+const MAX_BUFFERED = 50; // messages a visitor may send while the worker is still waking
+const PING_EVERY = 30000; // a connection that stops answering is dropped, so half-open sockets cannot hold slots
 
 export function createGateway({ store, driver, masterKey, config, log = () => {} }) {
   const cookieName = config.secure ? '__Host-swg' : 'swg';
@@ -26,7 +29,7 @@ export function createGateway({ store, driver, masterKey, config, log = () => {}
     const h = String(host ?? '').toLowerCase();
     if (!h.endsWith(config.hostSuffix)) return null;
     const label = h.slice(0, -config.hostSuffix.length);
-    return SID.test(label) && store.session(label) && store.session(label).status !== 'deleting' ? label : null;
+    return SID_RE.test(label) && store.session(label) && store.session(label).status !== 'deleting' ? label : null;
   };
   // who is this visitor in this session? Their cookie must belong to this very session and they must not be revoked.
   const visitor = (req, sid) => {
@@ -41,8 +44,7 @@ export function createGateway({ store, driver, masterKey, config, log = () => {}
     req.on('data', (d) => { if (!over) { b += d; if (b.length > MAX_BODY) { over = true; resolve(null); } } });
     req.on('end', () => { if (over) return; try { const j = JSON.parse(b); resolve(j && typeof j === 'object' ? j : null); } catch { resolve(null); } });
   });
-  const hits = new Map();
-  const limited = (key, max, windowMs) => { const t = Date.now(), h = (hits.get(key) ?? []).filter((x) => x > t - windowMs); h.push(t); hits.set(key, h); return h.length > max; };
+  const limited = createLimiter();
   const reply = (res, code, body, extra = {}) => { res.writeHead(code, { 'content-type': typeof body === 'object' ? 'application/json' : 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...extra }); res.end(typeof body === 'object' ? JSON.stringify(body) : body); };
 
   async function handler(req, res) {
@@ -93,8 +95,11 @@ export function createGateway({ store, driver, masterKey, config, log = () => {}
     const done = () => open.set(ip, Math.max(0, (open.get(ip) ?? 1) - 1));
     client.on('close', done);
     client.on('error', () => {});
+    client.isAlive = true; client.on('pong', () => { client.isAlive = true; });
+    const ping = setInterval(() => { if (!client.isAlive) return client.terminate(); client.isAlive = false; client.ping(); }, PING_EVERY);
+    client.on('close', () => clearInterval(ping));
     const buffered = [];
-    client.on('message', (d) => buffered.push(d));
+    client.on('message', (d) => { if (buffered.length >= MAX_BUFFERED) return client.close(1009, 'too much before the session was ready'); buffered.push(d); });
     let port;
     try { port = (await driver.start(store.session(sid))).port; store.update(sid, { last_active: Date.now() }); } catch (e) { log('wake failed:', e.message); return client.close(1011, 'session unavailable'); }
     if (client.readyState !== WebSocket.OPEN) return;

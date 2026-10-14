@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { tar } from './testtar.mjs';
-import { importRepo, parseRepo } from './importer.mjs';
+import { ImportError, importRepo, parseRepo } from './importer.mjs';
 
 const serve = (body, status = 200, headers = {}) => async () => new Response(body, { status, headers });
 const dest = () => join(mkdtempSync(join(tmpdir(), 'imp-')), 'work');
@@ -64,4 +64,17 @@ test('files are written without an executable bit', { skip: process.platform ===
   const d = dest();
   await importRepo('a/b', d, { fetch: serve(tar([['r/run.sh', '#!/bin/sh']])) });
   assert.equal(statSync(join(d, 'run.sh')).mode & 0o111, 0);
+});
+
+test('every import failure is an ImportError (so the app can tell the visitor), and only a few imports run at once', async () => {
+  const fail = async (fetchFn, input = 'a/b', limits) => importRepo(input, dest(), { fetch: fetchFn, limits }).then(() => null, (e) => e);
+  for (const e of [await fail(serve('not gzip')), await fail(serve(gzipSync(Buffer.alloc(5e6))), 'a/b', { unpacked: 1e6 }), await fail(serve('', 404)), await fail(serve('', 500)), await fail(async () => { throw new Error('ECONNRESET 10.0.0.1'); }), await fail(serve(''), 'nope')])
+    assert(e instanceof ImportError, String(e?.message));
+  assert.equal((await fail(async () => { throw new Error('ECONNRESET 10.0.0.1'); })).message, 'could not reach GitHub', 'network details are not passed on');
+  let release; const hold = new Promise((r) => { release = r; });
+  const slow = async () => { await hold; return new Response(tar([['r/f', 'ok']])); };
+  const running = [1, 2, 3].map(() => importRepo('a/b', dest(), { fetch: slow }));
+  assert.match((await fail(serve(tar([['r/f', 'ok']])))).message, /busy/);
+  release(); await Promise.all(running);
+  assert.equal(await importRepo('a/b', dest(), { fetch: serve(tar([['r/f', 'ok']])) }), 1, 'slots are given back');
 });

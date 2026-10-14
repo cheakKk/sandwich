@@ -18,6 +18,7 @@ export function createLifecycle({ store, driver, retention = {}, now = Date.now,
   }
 
   async function deleteAccount(userId) {
+    store.endWebSessionsOf(userId); // first: no new request can be made as this user while we delete
     for (const s of store.allSessions().filter((x) => x.owner_id === userId)) await deleteSession(s.id);
     store.deleteUser(userId); // their web logins go with them
     store.scrub();

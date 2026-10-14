@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync
 import { tmpdir } from 'node:os';
 import { join as pjoin } from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import WebSocket from 'ws';
 import { sign } from '../assert.mjs';
 import { tar } from './testtar.mjs';
@@ -196,7 +197,8 @@ test('a GitHub repo is imported once at creation; a restart keeps the team chang
 });
 
 // every byte under a path (files and folders, recursively), as one string, for searching
-const bytesUnder = (p) => { try { if (statSync(p).isDirectory()) return readdirSync(p).map((n) => bytesUnder(pjoin(p, n))).join('\n') + readdirSync(p).join('\n'); return readFileSync(p).toString('latin1'); } catch { return ''; } };
+let scanned = 0;
+const bytesUnder = (p) => { try { if (statSync(p).isDirectory()) return readdirSync(p).map((n) => bytesUnder(pjoin(p, n))).join('\n') + readdirSync(p).join('\n'); scanned++; return readFileSync(p).toString('latin1'); } catch (e) { if (e.code === 'ENOENT') return ''; throw e; } };
 
 test('deleting a session leaves no trace: canary strings are not in the database, its log, the folders or the logs', async () => {
   const logs = [];
@@ -213,6 +215,7 @@ test('deleting a session leaves no trace: canary strings are not in the database
     const everything = () => [bytesUnder(t.dbDir), bytesUnder(t.baseDir), logs.join('\n')].join('\n');
     // the scan is not vacuous: before deleting, the name, guest and chat really are stored somewhere...
     const before = everything();
+    assert(scanned >= 3, 'the scan really read the database and the session folders');
     for (const c of [NAME, GUEST, CHAT]) assert(before.includes(c), c + ' should exist before deletion');
     assert(!before.includes('CANARYKEY'), 'the API key is never stored or logged in the clear, even while the session lives');
     ws.close(); gws.close();
@@ -257,9 +260,12 @@ test('deleting my account deletes every session I host, my logins and me; others
     await t.login('maya');
     const a = (await t.call('POST', '/api/sessions', { name: 'a', key: KEY })).json();
     const mayaId = t.store.session(a.id).owner_id;
+    const other = t.store.upsertUser('dev', 'someone-else', 'sam');
+    const sid = t.store.createSession({ ownerId: other.id, name: 'sams' }); await t.driver.start(t.store.session(sid));
     const r = await t.call('DELETE', '/api/me');
     assert.equal(r.status, 200);
-    assert.equal(t.store.user(mayaId), undefined); assert.equal(t.store.allSessions().length, 0); assert.equal(readdirSync(t.baseDir).length, 0);
+    assert.equal(t.store.user(mayaId), undefined); assert.deepEqual(t.store.allSessions().map((x) => x.id), [sid]); assert.deepEqual(readdirSync(t.baseDir), [sid]);
+    assert(t.store.user(other.id) && t.driver.isRunning(sid), 'the other account and its worker are untouched');
     assert.equal((await t.call('GET', '/api/me')).status, 401, 'the login is gone');
   } finally { await t.close(); }
 });
@@ -275,5 +281,60 @@ test('a session being deleted cannot be woken or opened', async () => {
     await assert.rejects(t.driver.start(t.store.session(s.id)), /being deleted/);
     assert.equal((await t.gwReq(host.host, 'GET', host.link.pathname + host.link.search)).status, 404, 'the gateway treats it as unknown');
     assert.equal((await t.call('POST', `/api/sessions/${s.id}/enter`, {})).status, 404);
+  } finally { await t.close(); }
+});
+
+test('two wakes at once share one worker; a delete during a start leaves no process and no folder', async () => {
+  const t = await boot();
+  try {
+    await t.login('maya');
+    const mk = (name) => t.store.createSession({ ownerId: t.store.db.prepare('select id from users').get().id, name });
+    const a = mk('race-a');
+    const [x, y] = await Promise.all([t.driver.start(t.store.session(a)), t.driver.start(t.store.session(a))]);
+    assert.equal(x.child.pid, y.child.pid, 'one worker, not two');
+    await t.driver.stop(a);
+    assert.equal(x.child.exitCode !== null || x.child.signalCode !== null, true, 'stopped for real');
+
+    const b = mk('race-b');
+    const pending = t.driver.start(t.store.session(b)).catch((e) => e);
+    await t.lifecycle.deleteSession(b); // lands in the middle of the start
+    assert.match(String((await pending).message), /being deleted/);
+    assert.equal(t.driver.isRunning(b), false);
+    assert(!existsSync(t.driver.dirs(b).work), 'no folder written back after the wipe');
+    assert.equal(t.store.session(b), undefined);
+  } finally { await t.close(); }
+});
+
+test('any failed start (not only a bad repo) leaves no session and no sealed key; a corrupt or bomb archive is a clean 422', async () => {
+  let reply = () => new Response('this is not gzip');
+  const t = await boot({ fetch: async () => reply() });
+  try {
+    await t.login('maya');
+    const body = { name: 'bad', key: KEY, source: { type: 'github', repo: 'acme/site' } };
+    for (const r of [() => new Response('this is not gzip'), () => new Response(gzipSync(Buffer.alloc(120e6)))]) {
+      reply = r;
+      const res = await t.call('POST', '/api/sessions', body);
+      assert.equal(res.status, 422, res.json().error); assert.match(res.json().error, /corrupt|too large/);
+      assert.equal(t.store.allSessions().length, 0); assert.equal(readdirSync(t.baseDir).length, 0);
+    }
+    t.driver.start = async () => { throw new Error('boom C:\\secret'); };
+    const res = await t.call('POST', '/api/sessions', { name: 'bad2', key: KEY });
+    assert.equal(res.status, 502); assert(!JSON.stringify(res.json()).includes('secret'));
+    assert.equal(t.store.allSessions().length, 0, 'no session with a stored key is left for the sweep to find');
+  } finally { await t.close(); }
+});
+
+test('a visitor cannot queue unlimited messages while the worker wakes', async () => {
+  const t = await boot();
+  try {
+    await t.login('maya');
+    const s = await t.sessionOf('slow');
+    const host = await t.enter(s);
+    await t.driver.stop(s.id);
+    t.driver.start = () => new Promise(() => {}); // a worker that never comes up
+    const ws = t.socket(host.host, { cookie: host.cookie });
+    assert.equal(await ws.opened, true);
+    for (let i = 0; i < 80; i++) ws.send(JSON.stringify({ text: 'x' + i }));
+    assert.equal(await ws.closed, 1009);
   } finally { await t.close(); }
 });

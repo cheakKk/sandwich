@@ -34,11 +34,11 @@ async function download({ owner, repo }, fetchFn, lim) {
     try { res = await fetchFn(url, { redirect: 'manual', headers: { accept: 'application/gzip' }, signal: AbortSignal.timeout(30000) }); } catch { throw new ImportError('could not reach GitHub'); }
     if (res.status >= 300 && res.status < 400) {
       let next; try { next = new URL(res.headers.get('location') ?? '', url); } catch { throw new ImportError('bad redirect'); }
+      res.body?.cancel().catch(() => {});
       if (next.protocol !== 'https:' || !REDIRECT_HOSTS.has(next.hostname) || next.port) throw new ImportError('redirect refused');
       url = next.href; continue;
     }
-    if (res.status === 404) throw new ImportError('repo not found or not public');
-    if (res.status !== 200) throw new ImportError('download failed');
+    if (res.status !== 200) { res.body?.cancel().catch(() => {}); throw new ImportError(res.status === 404 ? 'repo not found or not public' : 'download failed'); }
     if (Number(res.headers.get('content-length') ?? 0) > lim.download) throw new ImportError('repo too large');
     const chunks = []; let n = 0;
     try { for await (const c of res.body) { n += c.length; if (n > lim.download) throw new ImportError('repo too large'); chunks.push(c); } } catch (e) { throw e instanceof ImportError ? e : new ImportError('download failed'); }
@@ -72,7 +72,7 @@ export function* tarEntries(buf, lim = LIMITS) {
 
 // Unpack into a new (or empty) dest; on any failure dest is deleted, so it must not hold anything you want to keep. Strips the leading "repo-sha/" folder; skips .git; refuses unsafe paths.
 export function extract(tgz, dest, lim = LIMITS) {
-  let tar; try { tar = gunzipSync(tgz, { maxOutputLength: lim.unpacked }); } catch (e) { throw new Error(e.code === 'ERR_BUFFER_TOO_LARGE' ? 'repo too large' : 'corrupt archive'); }
+  let tar; try { tar = gunzipSync(tgz, { maxOutputLength: lim.unpacked }); } catch (e) { throw new ImportError(e.code === 'ERR_BUFFER_TOO_LARGE' ? 'repo too large' : 'corrupt archive'); }
   const root = resolve(dest); let wrote = 0;
   try {
     for (const e of tarEntries(tar, lim)) {

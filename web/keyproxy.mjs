@@ -3,6 +3,7 @@
 // response is passed through with provider error text replaced. Spend is recorded here, so this is the truth about cost.
 import http from 'node:http';
 import { Readable } from 'node:stream';
+import { StringDecoder } from 'node:string_decoder';
 import { unbox } from './crypto.mjs';
 
 // $ per million tokens, deliberately on the high side so the budget errs toward stopping early. The provider's dashboard is the real bill.
@@ -53,7 +54,7 @@ export function createKeyProxy({ store, privateKey, upstream = 'https://api.anth
     let reserve = 0;
     if (!counting) {
       const [pin, pout] = priceOf(body.model);
-      const inputCost = (Math.ceil(JSON.stringify(body).length / 3) * 1.25 * pin) / 1e6;
+      const inputCost = (Math.ceil(JSON.stringify(body).length / 1.5) * 1.25 * pin) / 1e6;
       const remaining = (session.budget_usd ?? defaultBudgetUsd) - store.spentUsd(session.id) - held(session.id);
       const room = Math.floor(((remaining - inputCost) / pout) * 1e6); // output tokens the budget can still pay for
       if (room < 1) return fail(res, 402, 'invalid_request_error', 'the session budget is used up');
@@ -86,7 +87,7 @@ export function createKeyProxy({ store, privateKey, upstream = 'https://api.anth
 
       const stream = /text\/event-stream/.test(r.headers.get('content-type') ?? '');
       res.writeHead(200, { 'content-type': stream ? 'text/event-stream' : 'application/json', 'cache-control': 'no-store' });
-      const usage = {}; let sawEnd = false, tail = '';
+      const usage = {}, decoder = new StringDecoder('utf8'); let sawEnd = false, tail = '';
       const note = (u) => { if (u) for (const k of Object.keys(u)) if (typeof u[k] === 'number') usage[k] = u[k]; };
       if (!stream) {
         const text = await r.text();
@@ -94,8 +95,8 @@ export function createKeyProxy({ store, privateKey, upstream = 'https://api.anth
         res.end(text);
       } else {
         for await (const chunk of Readable.fromWeb(r.body)) {
-          res.write(chunk);
-          tail += chunk.toString('utf8');
+          if (!res.write(chunk)) await new Promise((r) => res.once('drain', r)); // a slow client slows us, it does not fill memory
+          tail += decoder.write(chunk);
           const lines = tail.split('\n'); tail = lines.pop();
           for (const l of lines) {
             if (!l.startsWith('data: ')) continue;
