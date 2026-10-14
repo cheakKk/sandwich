@@ -13,7 +13,7 @@ import { importRepo } from './importer.mjs';
 
 const WORKER = fileURLToPath(new URL('../server.js', import.meta.url));
 // The worker gets only what it needs. Nothing from the control plane's environment (keys, secrets, tokens) is inherited.
-const BASE_ENV = /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|TEMP|TMP|TMPDIR|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|LANG|TZ)$/i;
+const BASE_ENV = /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|TEMP|TMP|TMPDIR|LANG|TZ)$/i;
 
 const freePort = () => new Promise((resolve, reject) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); s.on('error', reject); });
 const reachable = (port) => new Promise((resolve) => { const c = net.connect(port, '127.0.0.1'); c.on('connect', () => { c.destroy(); resolve(true); }); c.on('error', () => resolve(false)); });
@@ -21,6 +21,7 @@ const reachable = (port) => new Promise((resolve) => { const c = net.connect(por
 // What a session's worker may know. Nothing from the control plane's own environment gets through except harmless basics.
 export const workerEnvFor = ({ env, session, port, data, masterKey, proxyUrl, proxyToken, extra = {} }) => ({
   ...Object.fromEntries(Object.entries(env).filter(([k]) => BASE_ENV.test(k))),
+  HOME: join(data, 'home'), USERPROFILE: join(data, 'home'), APPDATA: join(data, 'home'), LOCALAPPDATA: join(data, 'home'), // never the operator's own folders
   PORT: String(port), HOST: '127.0.0.1', SANDWICH_DB: join(data, 'worker.db'),
   SANDWICH_ASSERT_KEY: deriveKey(masterKey, session.id), SANDWICH_SESSION_ID: session.id, SANDWICH_STRICT_TOKENS: '1',
   ANTHROPIC_BASE_URL: proxyUrl, ANTHROPIC_API_KEY: proxyToken, // the sandbox holds a token, never the real key
@@ -57,7 +58,7 @@ export function createLocalDriver({ store, masterKey, baseDir, proxyUrl, workerE
       stillWanted();
       writeFileSync(marker, '');
     }
-    mkdirSync(work, { recursive: true }); mkdirSync(data, { recursive: true });
+    mkdirSync(work, { recursive: true }); mkdirSync(join(data, 'home'), { recursive: true });
     const port = await freePort();
     stillWanted();
     const proxyToken = newToken(32);
@@ -105,7 +106,11 @@ export function createLocalDriver({ store, masterKey, baseDir, proxyUrl, workerE
     const e = running.get(id);
     if (!e) return;
     const token = sign(deriveKey(masterKey, id), { sid: id, sub: 'control-plane', name: 'control-plane', role: 'owner' }, 30000);
-    await fetch(`http://127.0.0.1:${e.port}/internal/drop`, { method: 'POST', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify({ sub }) }).catch(() => {});
+    for (let i = 0; i < 3; i++) { // a busy worker may be slow to answer; a revoked person's socket must not stay open because of that
+      const r = await fetch(`http://127.0.0.1:${e.port}/internal/drop`, { method: 'POST', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify({ sub }), signal: AbortSignal.timeout(3000) }).catch(() => null);
+      if (r?.ok) return;
+    }
+    log(`drop of ${sub} in ${id} was not confirmed`);
   }
 
   return { start, stop, wipe, ids, drop, portOf: (id) => running.get(id)?.port, isRunning: (id) => running.has(id), stopAll: () => Promise.all([...running.keys()].map(stop)), dirs };

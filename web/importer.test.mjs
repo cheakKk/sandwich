@@ -78,3 +78,10 @@ test('every import failure is an ImportError (so the app can tell the visitor), 
   release(); await Promise.all(running);
   assert.equal(await importRepo('a/b', dest(), { fetch: serve(tar([['r/f', 'ok']])) }), 1, 'slots are given back');
 });
+
+test('git\'s own folders are never imported, however a case-insensitive disk would spell them', async () => {
+  const d = dest();
+  const n = await importRepo('a/b', d, { fetch: serve(tar([['r/.GIT/config', 'x'], ['r/.git./hooks/pre-commit', 'x'], ['r/GIT~1/config', 'x'], ['r/.gitmodules', 'x'], ['r/sub/.Git/config', 'x'], ['r/.github/ci.yml', 'keep'], ['r/.gitignore', 'keep']])) });
+  assert.equal(n, 2);
+  assert.deepEqual(readdirSync(d).sort(), ['.github', '.gitignore']);
+});

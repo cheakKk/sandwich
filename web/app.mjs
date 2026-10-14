@@ -14,7 +14,7 @@ export function createApp({ store, boxKey, config, providers, driver, lifecycle,
   const PRE = cookieName('swpre'), WEB = cookieName('sw');
 
   const limited = createLimiter();
-  const ipOf = (req) => (config.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',').at(-1).trim() : '') || req.socket.remoteAddress;
+  const ipOf = (req) => (config.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',').at(-(config.proxyHops ?? 1))?.trim() : '') || req.socket.remoteAddress;
 
   const cookiesOf = (req) => Object.fromEntries(String(req.headers.cookie ?? '').split(/;\s*/).map((c) => { const i = c.indexOf('='); return i < 0 ? [] : [c.slice(0, i), c.slice(i + 1)]; }).filter((p) => p[0]));
   const setCookie = (res, name, value, maxAgeS) => {
@@ -22,7 +22,7 @@ export function createApp({ store, boxKey, config, providers, driver, lifecycle,
     res.setHeader('set-cookie', [].concat(res.getHeader('set-cookie') ?? [], c));
   };
 
-  const headers = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'content-security-policy': "default-src 'none'; frame-ancestors 'none'; base-uri 'none'" };
+  const headers = { ...(config.secure ? { 'strict-transport-security': 'max-age=31536000; includeSubDomains' } : {}), 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'content-security-policy': "default-src 'none'; frame-ancestors 'none'; base-uri 'none'" };
   const send = (res, code, body, extra = {}) => {
     const isJson = typeof body === 'object';
     res.writeHead(code, { ...headers, 'content-type': isJson ? 'application/json' : 'text/plain; charset=utf-8', ...extra });
@@ -81,7 +81,7 @@ export function createApp({ store, boxKey, config, providers, driver, lifecycle,
     if (!path.startsWith('/api/') && path !== '/auth/logout') return fail(res, 404, 'not found');
     if (req.method !== 'GET' && req.method !== 'HEAD' && !csrfOk(req)) return fail(res, 403, 'cross-site request refused');
     if (!user) return fail(res, 401, 'sign in first');
-    if (path === '/auth/logout' && req.method === 'POST') { store.endWebSession(cookiesOf(req)[WEB]); setCookie(res, WEB, '', 0); return send(res, 200, { ok: true }); }
+    if (path === '/auth/logout' && req.method === 'POST') { store.endWebSession(cookiesOf(req)[WEB]); store.endGatewayCookiesOf(user.id); setCookie(res, WEB, '', 0); return send(res, 200, { ok: true }); }
     if (path === '/api/me' && req.method === 'DELETE') { // delete my account: every session I host, my logins, then me
       await lifecycle.deleteAccount(user.id); setCookie(res, WEB, '', 0);
       return send(res, 200, { ok: true });

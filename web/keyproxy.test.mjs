@@ -147,3 +147,17 @@ test('a session with no budget of its own gets the default, never unlimited', as
   assert(t.seen[0].body.max_tokens < 700, 'clamped by the default: ' + t.seen[0].body.max_tokens);
   t.close();
 });
+
+test('spend the ledger cannot price is refused: server tools, remote MCP, containers, and pricing betas; ordinary tools and betas pass', async () => {
+  const t = await boot();
+  for (const bad of [{ tools: [{ type: 'web_search_20250305', name: 'web_search' }] }, { tools: [{ type: 'code_execution_20250522', name: 'code_execution' }] }, { tools: [null] }, { mcp_servers: [{ type: 'url', url: 'https://x', name: 'x' }] }, { container: 'c1' }]) {
+    const r = await t.post(msg(bad)); assert.equal(r.status, 400, JSON.stringify(bad));
+  }
+  assert.equal(t.seen.length, 0, 'none of them reached the provider');
+  const ok = await t.post(msg({ tools: [{ name: 'read', description: 'd', input_schema: { type: 'object' } }, { type: 'custom', name: 'x', input_schema: { type: 'object' } }] }), { headers: { 'anthropic-beta': 'claude-code-20250219, context-1m-2025-08-07 ,interleaved-thinking-2025-05-14' } });
+  assert.equal(ok.status, 200);
+  assert.equal(t.seen[0].headers['anthropic-beta'], 'claude-code-20250219,interleaved-thinking-2025-05-14', 'the 1M-context beta is dropped, the others kept');
+  await t.post(msg(), { headers: { 'anthropic-beta': 'code-execution-2025-05-22' } });
+  assert.equal(t.seen[1].headers['anthropic-beta'], undefined, 'nothing left means no header at all');
+  t.close();
+});

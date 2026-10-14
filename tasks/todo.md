@@ -25,7 +25,7 @@
 
 ## Checkpoint A: works locally, security reviewed
 - [ ] Full flow passes on this machine with the fake agent.
-- [ ] Agent-skills security audit and code review of everything new; findings fixed with tests. SECURITY.md rewritten to match.
+- [~] Security audit and code review done 2026-10-14, findings fixed with tests or listed in docs/audit-2026-10-14.md; SECURITY.md rewrite still owed.
 
 ## Phase 2: Go online (each step that costs money needs the user's explicit yes first)
 - [ ] **T15 $ Choose and price the sandbox host** (microVM-class isolation, per-tenant network, no metadata route, volumes, egress control; Fly Machines, Cloudflare Containers behind a Worker, Daytona, E2B, Modal). Quick search suggests Fly and Cloudflare charge little or nothing while idle, E2B long sessions need a $150/month plan. Verify on vendor pages. Accept: one-page estimate for 10, 50 and 200 sessions; user picks. Scope S.

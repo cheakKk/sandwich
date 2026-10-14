@@ -338,3 +338,20 @@ test('a visitor cannot queue unlimited messages while the worker wakes', async (
     assert.equal(await ws.closed, 1009);
   } finally { await t.close(); }
 });
+
+test('an invite shown at the wrong address is not burned; logging out ends the host\'s session cookies', async () => {
+  const t = await boot();
+  try {
+    await t.login('maya');
+    const a = await t.sessionOf('a'), b = await t.sessionOf('b');
+    const ea = await t.enter(a), eb = await t.enter(b);
+    const inv = await t.invite(a);
+    assert.equal((await t.join(eb.host, inv, 'jon')).status, 403, 'session A\'s invite does not work at B');
+    assert.equal(t.store.members(b.id).length, 1, 'and left no ghost member at B');
+    assert.equal((await t.join(ea.host, inv, 'jon')).status, 200, 'it still works at A');
+    // a host who logs out is out of their sessions at once
+    assert.equal(await t.socket(ea.host, { cookie: ea.cookie }).opened, true);
+    assert.equal((await t.call('POST', '/auth/logout', {})).status, 200);
+    assert.equal(await t.socket(ea.host, { cookie: ea.cookie }).opened, 401);
+  } finally { await t.close(); }
+});

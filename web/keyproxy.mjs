@@ -10,6 +10,11 @@ import { unbox } from './crypto.mjs';
 const PRICES = { opus: [15, 75], sonnet: [3, 15], haiku: [1, 5], fable: [15, 75] };
 const MODEL = /^claude-(opus|sonnet|haiku|fable)-[\w.-]{1,40}$/;
 const PATHS = new Set(['/v1/messages', '/v1/messages/count_tokens']);
+// Anything billed outside input and output tokens would escape the budget, so it is refused: server-side tools (web search, code
+// execution, computer use, remote MCP), containers, and betas that change pricing (1M context, code execution, files).
+const UNPRICED_BODY = ['mcp_servers', 'container'];
+const UNPRICED_BETA = /code-execution|computer-use|mcp-client|context-1m|files-api|web-fetch|web-search|skills|fast-mode|advisor/i;
+export const unpriced = (body) => UNPRICED_BODY.find((k) => body[k] !== undefined) ?? (Array.isArray(body.tools) && body.tools.some((t) => !t || typeof t !== 'object' || (t.type !== undefined && t.type !== 'custom')) ? 'tools' : null);
 const PASS_HEADERS = ['content-type', 'accept', 'anthropic-version', 'anthropic-beta']; // never auth headers, host, cookies or forwarding headers
 const KNOWN_ERRORS = new Set(['invalid_request_error', 'rate_limit_error', 'overloaded_error', 'not_found_error', 'request_too_large', 'api_error']);
 const MAX_BODY = 8 * 1024 * 1024;
@@ -47,6 +52,8 @@ export function createKeyProxy({ store, privateKey, upstream = 'https://api.anth
     let body;
     try { body = JSON.parse(await readBody(req)); } catch (e) { return fail(res, e.code === 413 ? 413 : 400, 'invalid_request_error', e.code === 413 ? 'request too large' : 'bad request'); }
     if (!body || typeof body.model !== 'string' || !MODEL.test(body.model)) return fail(res, 400, 'invalid_request_error', 'model not allowed');
+    const refused = unpriced(body);
+    if (refused) return fail(res, 400, 'invalid_request_error', `${refused} is not available in hosted sessions`);
     const counting = url.pathname.endsWith('/count_tokens');
     if (!counting && !(Number.isInteger(body.max_tokens) && body.max_tokens > 0)) return fail(res, 400, 'invalid_request_error', 'max_tokens is required');
 
@@ -74,6 +81,8 @@ export function createKeyProxy({ store, privateKey, upstream = 'https://api.anth
       const key = unbox(privateKey, session.key_sealed, session.id);
       const headers = { 'x-api-key': key };
       for (const h of PASS_HEADERS) if (req.headers[h]) headers[h] = String(req.headers[h]);
+      if (headers['anthropic-beta']) headers['anthropic-beta'] = headers['anthropic-beta'].split(',').map((b) => b.trim()).filter((b) => b && !UNPRICED_BETA.test(b)).join(',') || undefined;
+      if (!headers['anthropic-beta']) delete headers['anthropic-beta'];
       headers['content-type'] = 'application/json';
       const r = await fetchFn(upstream + url.pathname + (url.searchParams.get('beta') === 'true' ? '?beta=true' : ''), { method: 'POST', headers, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.any([abort.signal, AbortSignal.timeout(10 * 60 * 1000)]) });
 

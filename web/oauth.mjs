@@ -56,7 +56,7 @@ export function fromEnv(env, fetchFn) {
   if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) list.push(google({ clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET, fetchFn }));
   if (env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET) list.push(github({ clientId: env.GITHUB_CLIENT_ID, clientSecret: env.GITHUB_CLIENT_SECRET, fetchFn }));
   if (env.SANDWICH_DEV_AUTH === '1') {
-    if (env.NODE_ENV === 'production') throw new Error('SANDWICH_DEV_AUTH must not be set in production');
+    if (env.NODE_ENV === 'production' || list.length) throw new Error('SANDWICH_DEV_AUTH must not be set in production or next to real sign-in providers');
     list.push(dev());
   }
   return Object.fromEntries(list.map((p) => [p.id, p]));

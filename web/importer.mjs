@@ -3,7 +3,10 @@
 // parser that refuses anything but plain files and folders. Any unsafe entry fails the whole import and leaves nothing behind.
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve, sep } from 'node:path';
-import { gunzipSync } from 'node:zlib';
+import { gunzip } from 'node:zlib';
+import { promisify } from 'node:util';
+
+const gunzipAsync = promisify(gunzip); // off the main thread: a big archive must not stall every other visitor
 
 // Everything thrown from here is safe to show the visitor: fixed wording, never a path, URL or system error.
 export class ImportError extends Error {}
@@ -47,6 +50,8 @@ async function download({ owner, repo }, fetchFn, lim) {
   throw new ImportError('too many redirects');
 }
 
+// ".GIT", ".git.", "git~1", ".gitmodules": names a case-insensitive or short-name filesystem would treat as git's own
+const isGitName = (seg) => { const n = seg.toLowerCase().replace(/[. ]+$/, ''); return n === '.git' || n === '.gitmodules' || /^git~\d+$/.test(n); };
 const str = (b, o, n) => { const e = b.indexOf(0, o); return b.toString('utf8', o, e < 0 || e > o + n ? o + n : e); };
 
 // Yields { path, type: 'file' | 'dir', data } for each entry; throws on links, devices and anything it does not understand.
@@ -71,15 +76,15 @@ export function* tarEntries(buf, lim = LIMITS) {
 }
 
 // Unpack into a new (or empty) dest; on any failure dest is deleted, so it must not hold anything you want to keep. Strips the leading "repo-sha/" folder; skips .git; refuses unsafe paths.
-export function extract(tgz, dest, lim = LIMITS) {
-  let tar; try { tar = gunzipSync(tgz, { maxOutputLength: lim.unpacked }); } catch (e) { throw new ImportError(e.code === 'ERR_BUFFER_TOO_LARGE' ? 'repo too large' : 'corrupt archive'); }
+export async function extract(tgz, dest, lim = LIMITS) {
+  let tar; try { tar = await gunzipAsync(tgz, { maxOutputLength: lim.unpacked }); } catch (e) { throw new ImportError(e.code === 'ERR_BUFFER_TOO_LARGE' ? 'repo too large' : 'corrupt archive'); }
   const root = resolve(dest); let wrote = 0;
   try {
     for (const e of tarEntries(tar, lim)) {
       const rel = e.path.split('/').slice(1);                      // drop the top folder
       if (e.path.startsWith('/') || /[\0\\:]/.test(e.path) || rel.some((p) => p === '..' )) throw new ImportError('unsafe path in archive');
       const parts = rel.filter((p) => p && p !== '.');
-      if (!parts.length || parts.includes('.git')) continue;
+      if (!parts.length || parts.some(isGitName)) continue;
       const full = resolve(root, ...parts);
       if (!full.startsWith(root + sep)) throw new ImportError('unsafe path in archive');
       if (e.type === 'dir') { mkdirSync(full, { recursive: true }); continue; }
@@ -99,5 +104,5 @@ export async function importRepo(input, dest, { fetch: fetchFn = globalThis.fetc
   const repo = parseRepo(input);
   if (active >= MAX_CONCURRENT) throw new ImportError('imports are busy, try again in a minute');
   active++;
-  try { return extract(await download(repo, fetchFn, lim), dest, lim); } finally { active--; }
+  try { return await extract(await download(repo, fetchFn, lim), dest, lim); } finally { active--; }
 }

@@ -74,6 +74,7 @@ export function createStore(file = ':memory:') {
     deleteSession: (id) => q('delete from sessions where id = ?').run(id),
     // an account goes only after its sessions are gone (sessions.owner_id has no cascade on purpose); web logins cascade
     deleteUser(id) { q('delete from members where sub = ?').run(id); q('delete from users where id = ?').run(id); }, // also their name in other people's sessions
+    endGatewayCookiesOf: (sub) => q('delete from guests where sub = ?').run(sub), // a host who logs out is out of their sessions too
     endWebSessionsOf: (userId) => q('delete from websessions where user_id = ?').run(userId),
     // deleted rows are overwritten in place (secure_delete); this also empties the write-ahead log that could still hold old copies
     scrub: () => db.exec('pragma wal_checkpoint(TRUNCATE)'),
@@ -99,10 +100,10 @@ export function createStore(file = ':memory:') {
 
     // invites: single-use, expiring, bound to one session and one role; redeeming gives a guest session token
     createInvite(sessionId, createdBy, token, ttlMs, role = 'member') { q('insert into invites values(?,?,?,?,?)').run(hashToken(token), sessionId, role, now() + ttlMs, createdBy); },
-    redeemInvite(token, name, guestToken, guestTtlMs) {
+    redeemInvite(token, name, guestToken, guestTtlMs, onlySessionId) {
       const h = hashToken(token);
       const inv = q('select * from invites where hash = ?').get(h);
-      if (!inv) return null;
+      if (!inv || (onlySessionId && inv.session_id !== onlySessionId)) return null; // an invite shown at the wrong address is left alone
       q('delete from invites where hash = ?').run(h); // burned whether or not it had expired
       if (inv.expires <= now() || !s.session(inv.session_id) || s.session(inv.session_id).status === 'deleting') return null;
       const sub = 'g' + randomUUID().replace(/-/g, '');

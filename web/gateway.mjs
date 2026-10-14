@@ -12,7 +12,8 @@ import { SID_RE } from './store.mjs';
 
 const SITE = fileURLToPath(new URL('../site/', import.meta.url));
 const MAX_BODY = 4096;
-const GATEWAY_TTL = 30 * 24 * 3600 * 1000;
+const HOST_TTL = 12 * 3600 * 1000; // hosts come back through the dashboard, so theirs is short
+const GUEST_TTL = 7 * 24 * 3600 * 1000;
 const MAX_SOCKETS_PER_IP = 20;
 const MAX_BUFFERED = 50; // messages a visitor may send while the worker is still waking
 const PING_EVERY = 30000; // a connection that stops answering is dropped, so half-open sockets cannot hold slots
@@ -20,9 +21,9 @@ const PING_EVERY = 30000; // a connection that stops answering is dropped, so ha
 export function createGateway({ store, driver, masterKey, config, log = () => {} }) {
   const cookieName = config.secure ? '__Host-swg' : 'swg';
   const cookieOf = (req) => { for (const c of String(req.headers.cookie ?? '').split(/;\s*/)) { const i = c.indexOf('='); if (c.slice(0, i) === cookieName) return c.slice(i + 1); } return null; };
-  const setCookie = (res, v) => res.setHeader('set-cookie', `${cookieName}=${v}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${GATEWAY_TTL / 1000}${config.secure ? '; Secure' : ''}`);
+  const setCookie = (res, v, ttl) => res.setHeader('set-cookie', `${cookieName}=${v}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${ttl / 1000}${config.secure ? '; Secure' : ''}`);
   const originOf = (host) => `${config.secure ? 'https' : 'http'}://${host}`;
-  const ipOf = (req) => (config.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',').at(-1).trim() : '') || req.socket.remoteAddress;
+  const ipOf = (req) => (config.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',').at(-(config.proxyHops ?? 1))?.trim() : '') || req.socket.remoteAddress; // proxyHops: how many trusted proxies append to X-Forwarded-For
 
   // "s0123456789abcdef.sessions.example[:port]" -> the session id, or null for anything else (including a spoofed Host)
   const sidFromHost = (host) => {
@@ -58,16 +59,16 @@ export function createGateway({ store, driver, masterKey, config, log = () => {}
       const b = await readJson(req);
       if (!b || typeof b.invite !== 'string' || b.invite.length > 100 || typeof b.name !== 'string') return reply(res, 400, { error: 'invite and name are required' });
       const token = newToken();
-      const g = store.redeemInvite(b.invite, b.name, token, GATEWAY_TTL);
+      const g = store.redeemInvite(b.invite, b.name, token, GUEST_TTL, sid);
       if (!g || g.sessionId !== sid) return reply(res, 403, { error: 'this invite is not valid (it may have expired or been used)' }); // wrong session or dead: same answer
-      setCookie(res, token);
+      setCookie(res, token, GUEST_TTL);
       return reply(res, 200, { ok: true, name: g.name });
     }
     if (url.pathname === '/_enter' && req.method === 'GET') { // a signed-in host arriving from the dashboard
       const token = newToken();
-      const e = store.redeemEntry(url.searchParams.get('t') ?? '', token, GATEWAY_TTL);
+      const e = store.redeemEntry(url.searchParams.get('t') ?? '', token, HOST_TTL);
       if (!e || e.sessionId !== sid) return reply(res, 403, 'this link has expired');
-      setCookie(res, token);
+      setCookie(res, token, HOST_TTL);
       return reply(res, 302, '', { location: '/', 'referrer-policy': 'no-referrer' });
     }
     // everything else is the static page and its assets: served from here, never from the worker, so no request can wake it
@@ -88,12 +89,12 @@ export function createGateway({ store, driver, masterKey, config, log = () => {}
     const ip = ipOf(req);
     if ((open.get(ip) ?? 0) >= MAX_SOCKETS_PER_IP) return refuse(429);
     open.set(ip, (open.get(ip) ?? 0) + 1);
+    let freed = false; // the slot is given back when the raw socket closes, even if the upgrade never completes
+    socket.once('close', () => { if (!freed) { freed = true; open.set(ip, Math.max(0, (open.get(ip) ?? 1) - 1)); } });
     wss.handleUpgrade(req, socket, head, (client) => relay(client, req, sid, me, ip));
   }
 
   async function relay(client, req, sid, me, ip) {
-    const done = () => open.set(ip, Math.max(0, (open.get(ip) ?? 1) - 1));
-    client.on('close', done);
     client.on('error', () => {});
     client.isAlive = true; client.on('pong', () => { client.isAlive = true; });
     const ping = setInterval(() => { if (!client.isAlive) return client.terminate(); client.isAlive = false; client.ping(); }, PING_EVERY);
