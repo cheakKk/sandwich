@@ -52,6 +52,7 @@ await suite({ FAKE: '1', SANDWICH_SANDBOXED: '1', SANDWICH_DEFAULT_GUEST_CAP: '2
 await suite({ FAKE: '1', SANDWICH_BUDGET_USD: '0.015' }, ['check-budget.mjs']);
 await suite({ AGENT: 'codex', FAKE_CODEX: '1', CODEX_TRUST_MEMBERS: '1' }, ['check-codex.mjs']);
 await suite({ AGENT: 'codex', FAKE_CODEX: '1' }, ['check-codex-untrusted.mjs']);
+await suite({ FAKE: '1' }, ['check-panels.mjs']);
 await suite({ FAKE: '1' }, ['check-die.mjs']);
 // hosted-style: tokens only via the first WebSocket message, forwarded headers not trusted, tiny unauthenticated limits
 await suite({ FAKE: '1', SANDWICH_STRICT_TOKENS: '1', SANDWICH_TRUST_PROXY: '', SANDWICH_AUTH_TIMEOUT_MS: '800', SANDWICH_MAX_UNAUTH: '5' }, ['check-hosted-auth.mjs']);

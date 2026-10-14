@@ -13,7 +13,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
 import { fakeCodex, runCodex } from './codex.mjs';
 import { claudeTurn, codexTurn, creditTurn, dayStart, effectiveCap, formatUsage, headsUp, overBudget, overCap, toolLimiter } from './usage.mjs';
-import { agentEnv, compactMemory, dbPath, originFrom, parseSummary, promptMemory, publicError, readScope, recap, spawnAs, takeBatch, ttlText } from './lib.mjs';
+import { agentEnv, compactMemory, dbPath, memorySnapshot, originFrom, parseSummary, promptMemory, publicError, readScope, recap, spawnAs, takeBatch, ttlText } from './lib.mjs';
 
 const PORT = Number(process.env.PORT) || 3000;
 const AGENT = process.env.AGENT === 'codex' ? 'codex' : 'claude'; // whose login/plan powers the session
@@ -185,6 +185,7 @@ const clearDriverIfGone = (key, grace = GRACE_MS) => {
     if (driver?.key === key && !socketsOf(key).length) {
       emit('system', `${driver.name} left, the session is open to everyone`);
       driver = null;
+      pushPeople();
     }
   };
   if (grace > 0) setTimeout(check, grace).unref();
@@ -219,6 +220,7 @@ let claudeTotal = 0; // Claude's cost figure is a running total for the session;
 const recordUsage = (by, kind, t) => {
   if (!(t.tokensIn || t.tokensOut || t.costUsd)) return; // crash and startup results carry zeros: nothing to record
   addUsage.run(Date.now(), by.key, by.name, kind, t.tokensIn, t.tokensOut, t.cacheRead, t.costUsd);
+  pushUsage();
 };
 function onClaudeResult(m) {
   toolsThisTurn.reset(); // a new turn starts with a fresh tool allowance
@@ -261,6 +263,7 @@ function agentSays(text) {
   writeFileSync(MEMORY + '.tmp', compacted); // read-modify-write is synchronous, so no appends are lost
   renameSync(MEMORY + '.tmp', MEMORY);
   emit('system', `${MEMORY} saved`);
+  pushMemory();
 }
 
 // Codex: turns run one at a time, so messages that pile up during a turn go in as one batch. There is no
@@ -364,11 +367,30 @@ async function runAgent() {
   }
 }
 
+// Structured data for the web UI, pushed whenever it changes, so the page never has to parse chat text.
+// Nothing internal (token hashes, keys) is ever included.
+function peopleMsg() {
+  const online = new Map();
+  for (const c of clients.values()) if (!online.has(c.key)) online.set(c.key, { name: c.name, role: c.role, online: true, driver: driver?.key === c.key });
+  const offline = db.prepare("select token, name, role from tokens where kind = 'session'").all().filter((r) => !online.has(r.token)).map((r) => ({ name: r.name, role: r.role, online: false, driver: false }));
+  return { type: 'people', people: [...online.values(), ...offline] };
+}
+const pushPeople = () => broadcast(peopleMsg());
+function usageMsg(c) {
+  const rows = usageRows.all(0).filter((r) => isOp(c) || r.key === c.key).map(({ key, ...r }) => r);
+  const cap = c.role === 'owner' ? null : effectiveCap(getKv('cap:' + c.key), c.role === 'member' ? mode : 'guarded', DEFAULT_GUEST_CAP);
+  return { type: 'usage', rows, budget: effectiveBudget(), spent: spentUsd.get().n, me: { cap, usedToday: tokensToday.get(c.key, dayStart(Date.now())).n } };
+}
+const pushUsage = () => clients.forEach((c, ws) => send(ws, usageMsg(c)));
+const memoryMsg = () => ({ type: 'memory', ...memorySnapshot(existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '') });
+const pushMemory = () => broadcast(memoryMsg());
+
 // Remove a member for good: delete their token, close every tab, and hand the session back if they were driving.
 const removeMember = (key) => {
   delToken.run(key);
   for (const [w, m] of socketsOf(key)) { m.dead = true; clients.delete(w); w.close(4403, 'removed'); setTimeout(() => w.terminate(), 1000); }
   clearDriverIfGone(key, 0);
+  pushPeople();
 };
 
 const HELP = '/who /members /usage [today] /token /handoff [name] /save | ops: /invite /kick <name> /revoke <name> | owner: /op <name> /deop <name> /cap <name> <tokens|off|unlimited> /budget <dollars|off> /trust <guarded|trusted> /allow <Tool> /deny <Tool> /sandbox <read-only|write> (codex)';
@@ -387,6 +409,7 @@ function command(ws, c, line) {
       if (arg === 'trusted' && !SANDBOXED) return tell(ws, 'Trusted mode is only available inside the hosted sandbox. On your own computer it would let the agent run commands without asking.');
       mode = arg;
       broadcast({ type: 'mode', mode });
+      pushUsage(); // the default guest cap depends on the mode
       return emit('system', `${c.name} switched the session. ${MODE_NOTE[mode]}`);
     }
     case 'budget': { // owner sets the dollar budget for the whole session; prompts stop once the recorded cost reaches it
@@ -394,6 +417,7 @@ function command(ws, c, line) {
       const n = Number(arg);
       if (arg !== 'off' && !(n > 0)) return tell(ws, 'usage: /budget <dollars|off>');
       budgetUsd = arg === 'off' ? null : n;
+      pushUsage();
       return emit('system', arg === 'off' ? `session budget is now off${mode === 'trusted' ? ` (Trusted mode keeps a $${TRUSTED_BUDGET_USD} default)` : ''}` : `session budget is now $${n}`);
     }
     case 'invite': {
@@ -433,6 +457,7 @@ function command(ws, c, line) {
       if (!row || !(arg2 === 'off' || arg2 === 'unlimited' || (Number.isInteger(n) && n > 0))) return tell(ws, 'usage: /cap <name> <tokens per day | off | unlimited>');
       if (arg2 === 'off') db.prepare('delete from kv where k = ?').run('cap:' + row.token);
       else db.prepare('insert or replace into kv(k, v) values(?, ?)').run('cap:' + row.token, arg2 === 'unlimited' ? 'unlimited' : String(n));
+      pushUsage();
       if (arg2 === 'unlimited') return emit('system', `${arg} is exempt from usage caps (set by ${c.name}), including the Trusted-mode default`);
       return emit('system', arg2 === 'off' ? `${arg}'s own usage cap was removed by ${c.name}${mode === 'trusted' ? ' (the Trusted-mode default still applies)' : ''}` : `${arg} is capped at ${n} tokens per day (set by ${c.name}); a turn already running can finish`);
     }
@@ -452,7 +477,9 @@ function command(ws, c, line) {
         m.role = role;
         if (isOp(m)) pending.forEach((p, id) => send(w, { type: 'approval', id, tool: p.tool, input: p.input }));
       }
-      return emit('system', `${target[1].name} is now ${role}`);
+      emit('system', `${target[1].name} is now ${role}`);
+      pushPeople();
+      return pushUsage();
     }
     case 'sandbox': {
       if (!need(c.role === 'owner')) return;
@@ -472,7 +499,8 @@ function command(ws, c, line) {
       const target = arg ? byName(arg) : null;
       if (arg && !target) return tell(ws, `no member named ${arg}`);
       driver = target ? { key: target[1].key, name: target[1].name } : null;
-      return emit('system', driver ? `${c.name} handed the session to ${driver.name}` : `${c.name} opened the session to everyone`);
+      emit('system', driver ? `${c.name} handed the session to ${driver.name}` : `${c.name} opened the session to everyone`);
+      return pushPeople();
     }
     case 'save': {
       if (!need(isOp(c) || isDriver)) return;
@@ -520,6 +548,7 @@ function memoryApi(req, res) {
       appendFileSync(MEMORY, `- [${new Date().toISOString()}] ${m.kind} (${author}): ${m.text.replace(/\n+/g, ' ')}\n`);
     } catch (e) { return out(500, 'could not write memory'); }
     emit('system', `${author} added a ${m.kind} to ${MEMORY}`);
+    pushMemory();
     out(200, 'ok');
   });
 }
@@ -613,7 +642,10 @@ function admit(ws, req, t, nameParam) {
   tell(ws, recap({ tools, lastAgent: lastAgentText.get()?.text ?? null, memory: existsSync(MEMORY) ? readFileSync(MEMORY, 'utf8') : '' })); // quick review for the joiner
   if (isOp(c)) pending.forEach((p, id) => send(ws, { type: 'approval', id, tool: p.tool, input: p.input }));
   emit('system', `${name} joined`);
-  ws.on('close', () => { clients.delete(ws); clearDriverIfGone(c.key); if (clients.size && !c.dead) emit('system', `${name} left`); });
+  pushPeople();
+  send(ws, usageMsg(c));
+  send(ws, memoryMsg());
+  ws.on('close', () => { clients.delete(ws); pushPeople(); clearDriverIfGone(c.key); if (clients.size && !c.dead) emit('system', `${name} left`); });
   ws.on('message', (raw) => {
     try {
       let m;

@@ -295,3 +295,32 @@ test('agentEnv: extra values are added last and win', () => {
   assert.equal(agentEnv({ PATH: '/bin' }, { ANTHROPIC_BASE_URL: 'http://proxy', PATH: '/override' }).ANTHROPIC_BASE_URL, 'http://proxy');
   assert.equal(agentEnv({ PATH: '/bin' }, { PATH: '/override' }).PATH, '/override');
 });
+
+// --- structured data for the web UI ---
+import { memorySnapshot } from './lib.mjs';
+
+test('memorySnapshot: summary, and the newest entries by kind, as plain data', () => {
+  const memory = ['# Summary', 'Goal: ship login. Next: tests.', '', '## Log',
+    line('done', 'login form', 'ann'), line('done', 'signup page', 'bob'), line('decision', 'use passkeys', 'ann'),
+    line('task', 'write tests', 'bob'), line('handoff', 'half done, see auth.js', 'ann'), line('note', 'misc', 'ann')].join('\n');
+  const s = memorySnapshot(memory);
+  assert.equal(s.summary, 'Goal: ship login. Next: tests.');
+  assert.deepEqual(s.done.map((e) => e.text), ['login form', 'signup page']);
+  assert.deepEqual(s.done.map((e) => e.author), ['ann', 'bob']);
+  assert.deepEqual(s.decisions.map((e) => e.text), ['use passkeys']);
+  assert.deepEqual(s.tasks.map((e) => e.text), ['write tests']);
+  assert.equal(s.handoff.text, 'half done, see auth.js');
+  assert.equal(s.entries, 6);
+});
+
+test('memorySnapshot: keeps only the newest few, and an empty file is an empty snapshot', () => {
+  const memory = Array.from({ length: 12 }, (_, i) => line('done', `item${i}`)).join('\n');
+  const s = memorySnapshot(memory, 5);
+  assert.deepEqual(s.done.map((e) => e.text), ['item7', 'item8', 'item9', 'item10', 'item11']);
+  assert.deepEqual(memorySnapshot(''), { summary: '', done: [], decisions: [], tasks: [], handoff: null, entries: 0 });
+});
+
+test('memorySnapshot: a very long summary is cut, and headings are not part of it', () => {
+  const s = memorySnapshot('# Summary\n' + 'x'.repeat(2000) + '\n\n## Log\n');
+  assert.ok(s.summary.length <= 801 && !s.summary.includes('#'));
+});

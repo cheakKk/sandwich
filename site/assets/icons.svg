@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position:absolute">
+  <!-- Sandwich icon set. 24px grid, 1.75 stroke, round caps. The .a shape is the one accent per icon. Drawn for this project. -->
+  <style>.a{fill:var(--accent,#C93A1E);stroke:none}</style>
+  <symbol id="i-session" viewBox="0 0 24 24"><path d="M4 10c0-3 3.6-5 8-5s8 2 8 5z"/><rect class="a" x="4" y="11.5" width="16" height="2.2" rx="1.1"/><path d="M4 15.8h16v1.4a2.3 2.3 0 0 1-2.3 2.3H6.3A2.3 2.3 0 0 1 4 17.2z"/></symbol>
+  <symbol id="i-ticket" viewBox="0 0 24 24"><path d="M4 7a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v3a2 2 0 0 0 0 4v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3a2 2 0 0 0 0-4z"/><rect class="a" x="8" y="9.6" width="7" height="2" rx="1"/><path d="M8 15h8"/></symbol>
+  <symbol id="i-approve" viewBox="0 0 24 24"><path d="M9 4h6v5l3 3.2V14H6v-1.8L9 9z"/><rect class="a" x="5" y="16.5" width="14" height="2.6" rx="1.3"/></symbol>
+  <symbol id="i-handoff" viewBox="0 0 24 24"><circle cx="7" cy="8.5" r="3"/><circle cx="17" cy="8.5" r="3"/><path d="M2.5 19.5a4.5 4.5 0 0 1 9 0M12.5 19.5a4.5 4.5 0 0 1 9 0"/><rect class="a" x="9.5" y="12.4" width="5" height="2.2" rx="1.1"/></symbol>
+  <symbol id="i-cap" viewBox="0 0 24 24"><path d="M8 4h8M9 4v2.4C7 7.4 5.5 9.4 5.5 12v6A2 2 0 0 0 7.5 20h9a2 2 0 0 0 2-2v-6c0-2.6-1.5-4.6-3.5-5.6V4"/><rect class="a" x="7" y="14" width="10" height="4.2" rx="1"/></symbol>
+  <symbol id="i-memory" viewBox="0 0 24 24"><path d="M6 3h11a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM9 3v18M12 9h3M12 13h3"/><path class="a" d="M14.5 3H18v6.2l-1.75-1.4L14.5 9.2z"/></symbol>
+  <symbol id="i-invite" viewBox="0 0 24 24"><path d="M3.5 7h17v11h-17zM3.8 7.4l8.2 6 8.2-6"/><circle class="a" cx="18.5" cy="6" r="2.4"/></symbol>
+  <symbol id="i-usage" viewBox="0 0 24 24"><path d="M6 3h12v18l-2-1.5L14 21l-2-1.5L10 21l-2-1.5L6 21zM9 8h6M9 11.5h6"/><rect class="a" x="9" y="14.6" width="4" height="2" rx="1"/></symbol>
+  <symbol id="i-kick" viewBox="0 0 24 24"><path d="M6 20V5a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v15M4 20h16"/><circle class="a" cx="13.4" cy="12.4" r="1.3"/></symbol>
+  <symbol id="i-guarded" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="1.6"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/><circle class="a" cx="12" cy="15.2" r="1.6"/></symbol>
+  <symbol id="i-trusted" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="1.6"/><path d="M8 10.5V8a4 4 0 0 1 7.4-2.1"/><circle class="a" cx="12" cy="15.2" r="1.6"/></symbol>
+  <symbol id="i-busy" viewBox="0 0 24 24"><circle cx="12" cy="13.5" r="7"/><path d="M9.5 3.5h5M12 10v3.5l2.4 1.4"/><circle class="a" cx="12" cy="13.5" r="1.3"/></symbol>
+  <symbol id="i-people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3"/><path d="M3.5 19.5a5.5 5.5 0 0 1 11 0"/><path d="M16 12a2.4 2.4 0 1 0 0-4.8M17 15.4a4.4 4.4 0 0 1 3.5 4.1"/><circle class="a" cx="9" cy="8.5" r="1.1"/></symbol>
+  <symbol id="i-tool" viewBox="0 0 24 24"><path d="M14.6 4.6a4 4 0 0 0-4.8 5.2l-5.3 5.3a1.8 1.8 0 0 0 2.5 2.5l5.3-5.3a4 4 0 0 0 5.2-4.8l-2.6 2.5-2.1-.6-.6-2.1z"/><circle class="a" cx="6.2" cy="16.4" r="1.1"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5.2c0 4.4-3 7.8-7 9.8-4-2-7-5.4-7-9.8V6z"/><rect class="a" x="9" y="10.8" width="6" height="2.2" rx="1.1"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12h15M13.5 6.5 19 12l-5.5 5.5"/></symbol>
+</svg>

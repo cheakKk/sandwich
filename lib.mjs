@@ -155,3 +155,19 @@ export function spawnAs(uid, gid) {
     return child;
   };
 }
+
+// What the web UI shows in its memory panel, as plain data: the summary, and the newest entries by kind.
+const ENTRY = /^- \[([^\]]*)\] (done|decision|task|handoff|note) \(([^)]*)\): (.*)$/;
+export function memorySnapshot(memory, max = 5) {
+  const { header } = split(memory);
+  const summary = header.split('\n').filter((l) => !/^#{1,6}\s/.test(l)).join('\n').trim().slice(0, 800);
+  const by = { done: [], decision: [], task: [], handoff: [], note: [] };
+  let entries = 0;
+  for (const l of memory.split('\n')) {
+    const m = ENTRY.exec(l);
+    if (!m) continue;
+    entries++;
+    by[m[2]].push({ ts: m[1], author: m[3], text: m[4] });
+  }
+  return { summary, done: by.done.slice(-max), decisions: by.decision.slice(-max), tasks: by.task.slice(-max), handoff: by.handoff.at(-1) ?? null, entries };
+}
