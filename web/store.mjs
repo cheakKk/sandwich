@@ -19,6 +19,7 @@ export function createStore(file = ':memory:') {
     create table if not exists invites(hash text primary key, session_id text references sessions(id) on delete cascade, role text, expires integer, created_by text);
     create table if not exists proxy_tokens(hash text primary key, session_id text references sessions(id) on delete cascade, expires integer);
     create table if not exists ledger(id integer primary key, session_id text references sessions(id) on delete cascade, ts integer, tokens_in integer, tokens_out integer, usd real);
+    create table if not exists entries(hash text primary key, session_id text references sessions(id) on delete cascade, sub text, expires integer);
     create table if not exists guests(hash text primary key, session_id text references sessions(id) on delete cascade, sub text, expires integer);`);
   const q = (sql) => db.prepare(sql);
   const now = () => Date.now();
@@ -101,6 +102,17 @@ export function createStore(file = ':memory:') {
       q('insert into guests values(?,?,?,?)').run(hashToken(guestToken), inv.session_id, sub, now() + guestTtlMs);
       return { sessionId: inv.session_id, sub, name: finalName };
     },
+    // a host moving from the dashboard to the session's own origin: one single-use token, valid for a minute
+    createEntry(sessionId, sub, token) { q('insert into entries values(?,?,?,?)').run(hashToken(token), sessionId, sub, now() + 60000); },
+    redeemEntry(token, gatewayToken, ttlMs) {
+      const h = hashToken(token);
+      const e = q('select * from entries where hash = ?').get(h);
+      q('delete from entries where hash = ?').run(h);
+      const m = e && e.expires > now() && s.member(e.session_id, e.sub);
+      if (!m || m.revoked) return null;
+      q('insert into guests values(?,?,?,?)').run(hashToken(gatewayToken), e.session_id, e.sub, now() + ttlMs);
+      return { sessionId: e.session_id, sub: e.sub };
+    },
     guestBySession(token) {
       if (!token) return null;
       const r = q('select * from guests where hash = ?').get(hashToken(token));
@@ -115,7 +127,7 @@ export function createStore(file = ':memory:') {
     addLedger: (sessionId, tin, tout, usd) => q('insert into ledger(session_id, ts, tokens_in, tokens_out, usd) values(?,?,?,?,?)').run(sessionId, now(), tin, tout, usd),
     spentUsd: (sessionId) => q('select coalesce(sum(usd), 0) as n from ledger where session_id = ?').get(sessionId).n,
     purge() { // expired rows
-      for (const t of ['websessions', 'preauth', 'invites', 'guests', 'proxy_tokens']) q(`delete from ${t} where expires < ?`).run(now());
+      for (const t of ['websessions', 'preauth', 'invites', 'guests', 'proxy_tokens', 'entries']) q(`delete from ${t} where expires < ?`).run(now());
     },
   };
   return s;

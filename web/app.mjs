@@ -121,6 +121,11 @@ export function createApp({ store, boxKey, config, providers, driver, log = () =
         await driver.stop(sid); await driver.wipe(sid); store.deleteSession(sid);
         return send(res, 200, { ok: true });
       }
+      if (sub1 === 'enter' && req.method === 'POST') { // hosts open the session on its own origin with a single-use link
+        const token = newToken(24);
+        store.createEntry(sid, user.id, token);
+        return send(res, 201, { url: `${config.sessionUrl(sid)}/_enter?t=${token}` });
+      }
       if (sub1 === 'invites' && req.method === 'POST') {
         if (!isOp) return fail(res, 403, 'only the owner or an op can invite');
         if (limited('invite:' + user.id, 20, 3600000)) return fail(res, 429, 'too many invites');

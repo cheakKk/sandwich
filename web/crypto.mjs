@@ -1,7 +1,7 @@
 // Token and secret helpers for the control plane. Tokens are random and only their hash is stored. API keys are put in a "box":
 // encrypted to the key proxy's RSA public key, so the web tier can store a key but never read it back. Inside the box is AES-256-GCM,
 // bound to what the key belongs to (the session id), so a copied row will not open under another session.
-import { createCipheriv, createDecipheriv, createHash, privateDecrypt, publicEncrypt, randomBytes, timingSafeEqual, constants } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, privateDecrypt, publicEncrypt, randomBytes, timingSafeEqual, constants } from 'node:crypto';
 
 export const newToken = (bytes = 32) => randomBytes(bytes).toString('base64url');
 export const hashToken = (t) => createHash('sha256').update(String(t)).digest('hex');
@@ -36,3 +36,6 @@ export function unbox(privateKeyPem, boxed, aad) {
 }
 
 export const pkceChallenge = (verifier) => createHash('sha256').update(verifier).digest('base64url');
+
+// One signing key per session, derived from the master secret, so a key that leaks from one worker only ever works for that worker's session.
+export const deriveKey = (master, sessionId) => createHmac('sha256', master).update('assert:' + sessionId).digest('hex');
