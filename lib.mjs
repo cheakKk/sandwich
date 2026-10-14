@@ -74,10 +74,11 @@ export function parseSummary(text) {
 }
 
 // Where the server is reached from. Behind a proxy the forwarded values win, but only well-formed ones.
-export function originFrom(headers, tls) {
+export function originFrom(headers, tls, trustProxy = false) {
   const first = (v) => String(v ?? '').split(',')[0].trim();
-  const proto = first(headers['x-forwarded-proto']);
-  const host = first(headers['x-forwarded-host']);
+  // Forwarded headers are client-supplied unless something we control sits in front and overwrites them, so ignore them by default.
+  const proto = trustProxy ? first(headers['x-forwarded-proto']) : '';
+  const host = trustProxy ? first(headers['x-forwarded-host']) : '';
   return `${/^https?$/.test(proto) ? proto : tls ? 'https' : 'http'}://${/^[\w.:[\]-]+$/.test(host) ? host : headers.host || 'localhost'}`;
 }
 
@@ -130,3 +131,7 @@ export function takeBatch(queue) {
   const i = queue.findIndex(isSave);
   return queue.splice(0, i === -1 ? queue.length : i === 0 ? 1 : i);
 }
+
+// Errors that came from a provider or an SDK can contain keys, paths or account details, and the chat is shared with guests.
+// Those become one generic line (the original goes to the server log); our own messages pass through.
+export const publicError = (m) => (/^codex (turn failed|error|could not run)|^codex: /.test(m) ? 'codex had a problem with that turn (details are in the server log)' : m);

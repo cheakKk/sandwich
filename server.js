@@ -13,7 +13,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
 import { fakeCodex, runCodex } from './codex.mjs';
 import { claudeTurn, codexTurn, creditTurn, dayStart, effectiveCap, formatUsage, headsUp, overBudget, overCap, toolLimiter } from './usage.mjs';
-import { compactMemory, dbPath, originFrom, parseSummary, promptMemory, readScope, recap, takeBatch, ttlText } from './lib.mjs';
+import { compactMemory, dbPath, originFrom, parseSummary, promptMemory, publicError, readScope, recap, takeBatch, ttlText } from './lib.mjs';
 
 const PORT = Number(process.env.PORT) || 3000;
 const AGENT = process.env.AGENT === 'codex' ? 'codex' : 'claude'; // whose login/plan powers the session
@@ -69,7 +69,12 @@ const lastAgentText = db.prepare("select text from events where user = 'agent' a
 // redeeming it burns it and issues the member a session token. Only sha256(token) is stored.
 const token = () => randomBytes(16).toString('hex');
 const hash = (t) => createHash('sha256').update(String(t)).digest('hex');
-const ownerToken = token();
+// The owner token is normally random and printed once at startup for a local run. A hosting control plane supplies its own
+// (SANDWICH_OWNER_TOKEN) so it survives restarts, and then nothing is ever printed.
+const ownerToken = process.env.SANDWICH_OWNER_TOKEN || token();
+if (ownerToken.length < 32) { console.error('SANDWICH_OWNER_TOKEN must be at least 32 characters'); process.exit(1); }
+// Forwarded headers are only believed when the operator says a proxy that overwrites them sits in front (the hosted setup does).
+const TRUST_PROXY = process.env.SANDWICH_TRUST_PROXY === '1';
 const INVITE_TTL_MS = Number(process.env.INVITE_TTL_MS) || 24 * 3600 * 1000;
 const getToken = db.prepare('select kind, role, name, expires from tokens where token = ?');
 const putToken = (t, kind, role, name, expires) => db.prepare('insert into tokens(token, kind, role, name, expires) values(?,?,?,?,?)').run(hash(t), kind, role, name, expires);
@@ -290,7 +295,7 @@ async function runCodexAgent() {
     tool: (line) => { emit('agent', line); noteTool(); },
     idle: () => { if (!queue.length) setBusy(false); },
     onThread: (id) => db.prepare("insert or replace into kv(k, v) values('codex_thread', ?)").run(id),
-    onError: (m) => emit('system', m),
+    onError: (m) => { console.error('codex:', m); emit('system', publicError(m)); }, // guests see a generic line, the log has the detail
   });
 }
 
@@ -521,6 +526,7 @@ const PAGE_HEADERS = {
   'content-type': 'text/html',
   'x-frame-options': 'DENY',
   'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer', // an invite or session token in the address bar must never travel in a Referer header
   'content-security-policy': "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
 };
 const handler = (req, res) => (req.url.split('?')[0] === '/memory' ? memoryApi(req, res) : res.writeHead(200, PAGE_HEADERS).end(page));
@@ -530,6 +536,12 @@ const server = tls
 const wss = new WebSocketServer({ server, maxPayload: 32 * 1024 }); // a 4000-character message can reach ~24KB once JSON-escaped
 wss.on('error', () => {}); // ws re-emits the HTTP server's errors; without a listener that throws before server.on('error') below runs
 
+// Unauthenticated sockets get a short time to send {type:'auth', token, name} and are limited in number, so idle sockets
+// cannot tie the server up. In hosted mode (SANDWICH_STRICT_TOKENS=1) a token in the URL is refused, because URLs end up in logs.
+const AUTH_TIMEOUT_MS = Number(process.env.SANDWICH_AUTH_TIMEOUT_MS) || 5000;
+const MAX_UNAUTH = Number(process.env.SANDWICH_MAX_UNAUTH) || 100;
+const STRICT_TOKENS = process.env.SANDWICH_STRICT_TOKENS === '1';
+let unauth = 0;
 wss.on('connection', (ws, req) => {
   ws.on('error', () => {}); // protocol violations (bad frames, oversize) close this socket, never the server
   let q;
@@ -539,16 +551,37 @@ wss.on('connection', (ws, req) => {
   if (origin) {
     let from = null;
     try { from = new URL(origin).host; } catch { /* malformed Origin: treated as foreign */ }
-    const here = String(req.headers['x-forwarded-host'] || req.headers.host).split(',')[0].trim();
+    const here = String((TRUST_PROXY && req.headers['x-forwarded-host']) || req.headers.host).split(',')[0].trim();
     if (from !== here) return ws.close(4403, 'this page is not allowed to connect');
   }
-  let t = q.get('t');
+  const urlToken = q.get('t');
+  if (urlToken) {
+    if (STRICT_TOKENS) return ws.close(4401, 'send the token in the first message, not the URL');
+    return admit(ws, req, urlToken, q.get('n'));
+  }
+  if (unauth >= MAX_UNAUTH) return ws.close(4408, 'too many connections');
+  unauth++;
+  let counted = true;
+  const release = () => { if (counted) { counted = false; unauth--; } };
+  const timer = setTimeout(() => ws.close(4401, 'authenticate first'), AUTH_TIMEOUT_MS);
+  ws.on('close', () => { clearTimeout(timer); release(); });
+  ws.once('message', (raw) => {
+    clearTimeout(timer);
+    release();
+    let m;
+    try { m = JSON.parse(raw); } catch { return ws.close(4401, 'authenticate first'); }
+    if (!m || m.type !== 'auth' || typeof m.token !== 'string') return ws.close(4401, 'authenticate first');
+    admit(ws, req, m.token, m.name);
+  });
+});
+
+function admit(ws, req, t, nameParam) {
   let who = whoIs(t);
   const row = who ? null : getToken.get(hash(t));
   if (row?.kind === 'invite') {
     delToken.run(hash(t)); // single-use, burned whether or not it had expired
     if (row.expires > Date.now()) {
-      const chosen = pick(clean(q.get('n'), 'guest'), [...sessionNames(), ...ownerNames, ...[...clients.values()].map((m) => m.name)]);
+      const chosen = pick(clean(nameParam, 'guest'), [...sessionNames(), ...ownerNames, ...[...clients.values()].map((m) => m.name)]);
       t = token();
       putToken(t, 'session', 'member', chosen, Date.now() + SESSION_TTL_MS);
       who = { role: 'member', name: chosen };
@@ -563,8 +596,8 @@ wss.on('connection', (ws, req) => {
   const key = role === 'owner' ? 'owner' : hash(t);
   if (clients.size >= MAX_SOCKETS || socketsOf(key).length >= (role === 'owner' ? 6 : MAX_TABS)) return ws.close(4408, 'too many connections');
   if (role !== 'owner') db.prepare('update tokens set expires = ? where token = ?').run(Date.now() + SESSION_TTL_MS, key); // sliding expiry
-  if (role === 'owner') { name = pick(clean(q.get('n'), 'owner'), sessionNames()); ownerNames.add(name); } // the owner chooses a name; members can't take it
-  const c = { name, role, token: t, key, origin: originFrom(req.headers, !!tls), dead: false };
+  if (role === 'owner') { name = pick(clean(nameParam, 'owner'), sessionNames()); ownerNames.add(name); } // the owner chooses a name; members can't take it
+  const c = { name, role, token: t, key, origin: originFrom(req.headers, !!tls, TRUST_PROXY), dead: false };
   clients.set(ws, c);
   send(ws, { type: 'role', role, name });
   send(ws, statusMsg());
@@ -612,7 +645,7 @@ wss.on('connection', (ws, req) => {
       console.error('message handler:', e);
     }
   });
-});
+}
 
 // The agent ending, by crash or by finishing its stream, must never leave the chat waiting on nothing.
 function agentStopped() {
@@ -629,6 +662,5 @@ const HOST = process.env.HOST || '127.0.0.1'; // set HOST=0.0.0.0 only behind TL
 server.listen(PORT, HOST, () => {
   if (HOST !== '127.0.0.1' && !tls) console.log('WARNING: listening beyond localhost without TLS: session tokens travel unencrypted. Put it behind a TLS tunnel or set SANDWICH_CERT/SANDWICH_KEY.');
   if (AGENT === 'codex') console.log(`codex mode: members ${TRUST_MEMBERS ? 'ARE' : 'are NOT'} allowed (CODEX_TRUST_MEMBERS). Codex can read any file your OS account can read, not only this folder, and has no per-command approval.`);
-  console.log(`owner link: ${tls ? 'https' : 'http'}://127.0.0.1:${PORT}/#${ownerToken}`);
-  if (process.env.EXPOSE_TOKEN) console.log(`HOST_TOKEN=${ownerToken}`);
+  if (!process.env.SANDWICH_OWNER_TOKEN) console.log(`owner link: ${tls ? 'https' : 'http'}://127.0.0.1:${PORT}/#${ownerToken}`); // never echo a token the operator chose
 });

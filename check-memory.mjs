@@ -1,4 +1,4 @@
-// Memory smoke test: CLI + MCP both hit the same file. Server: FAKE=1 EXPOSE_TOKEN=1 node server.js (no PROJECT_MEMORY.md)
+// Memory smoke test: CLI + MCP both hit the same file. Server: run through `npm test` (fake agent, no PROJECT_MEMORY.md)
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { execFileSync } from 'node:child_process';

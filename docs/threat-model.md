@@ -49,3 +49,8 @@ Written from an independent security review of the hosted design (2026-10-13). E
 ## Things not to build (from the review)
 
 A long-lived key vault in v1 (hold the key per session instead); trusting `server.js` as the authority; Codex for guests and blanket `/allow` in the hosted build; path-based session URLs on the control-plane origin; arbitrary git URLs; a flat sandbox network; SDK-reported usage as the billing source; any secret in the sandbox; printing or logging owner tokens; permanent guest access; the GitHub `repo` scope or any push-back feature in v1.
+
+## Progress log
+
+- **T3 (worker hardening) done, with tests:** tokens no longer travel in URLs when `SANDWICH_STRICT_TOKENS=1` (first-message auth, short timeout, limit on unauthenticated sockets) (#8, #16 in part); forwarded headers are ignored unless `SANDWICH_TRUST_PROXY=1` (#7 in part); provider and SDK error text is replaced by a generic line in the chat (#12 in part, #15 in part); `Referrer-Policy: no-referrer`; the test runner supplies the owner token and fails if any server prints a token (#15); dependencies are pinned and install scripts are off, enforced by a test (#20). Still open for these rows: the proxy, microVM and control-plane halves of each mitigation.
+- **T1 done:** Guarded and Trusted modes, default guest cap, per-turn tool limit, bounded queue, session budget (#6 in part, #14 in part).

@@ -26,8 +26,11 @@
   let ws;
   const connect = () => {
     // re-read the hash each time: after an invite is redeemed it holds our own session token
-    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/?t=' + encodeURIComponent(location.hash.slice(1)) + '&n=' + encodeURIComponent(me));
-    ws.onopen = () => { log.textContent = ''; for (const k in asks) delete asks[k]; }; // the server replays history on every connect
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/');
+    ws.onopen = () => {
+      log.textContent = ''; for (const k in asks) delete asks[k]; // the server replays history on every connect
+      ws.send(JSON.stringify({ type: 'auth', token: location.hash.slice(1), name: me })); // never in the URL: URLs end up in logs
+    };
     ws.onclose = (e) => {
       if (e.code === 4401) { log.textContent = 'Sandwich is invite only. Invite links work once and expire. Ask the owner for a new one.'; }
       else if (e.code === 4403 || e.code === 4408) { log.textContent = e.reason || (e.code === 4408 ? 'Too many tabs open.' : 'You were removed from this session.'); }

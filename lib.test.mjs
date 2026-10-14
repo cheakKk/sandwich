@@ -114,8 +114,8 @@ test('parseSummary: empty or missing summary is rejected', () => {
 test('originFrom: follows a single forwarded https host, ignores junk', () => {
   assert.equal(originFrom({ host: 'localhost:3000' }, false), 'http://localhost:3000');
   assert.equal(originFrom({ host: 'localhost:3000' }, true), 'https://localhost:3000');
-  assert.equal(originFrom({ host: 'x', 'x-forwarded-proto': 'https, http', 'x-forwarded-host': 'a.example, b.example' }, false), 'https://a.example');
-  assert.equal(originFrom({ host: 'x', 'x-forwarded-proto': 'javascript', 'x-forwarded-host': 'a b/c' }, false), 'http://x');
+  assert.equal(originFrom({ host: 'x', 'x-forwarded-proto': 'https, http', 'x-forwarded-host': 'a.example, b.example' }, false, true), 'https://a.example');
+  assert.equal(originFrom({ host: 'x', 'x-forwarded-proto': 'javascript', 'x-forwarded-host': 'a b/c' }, false, true), 'http://x');
 });
 
 test('sensitive: flags databases, secrets and keys but not normal source files', () => {
@@ -252,5 +252,23 @@ test('ttlText: short invite lifetimes are not shown as 0h', () => {
 test('originFrom: a request with no Host header does not produce http://undefined', () => {
   assert.equal(originFrom({}, false), 'http://localhost');
   assert.equal(originFrom({ host: '[::1]:3000' }, false), 'http://[::1]:3000');
-  assert.equal(originFrom({ host: 'x', 'x-forwarded-host': '[::1]:3000' }, true), 'https://[::1]:3000');
+  assert.equal(originFrom({ host: 'x', 'x-forwarded-host': '[::1]:3000' }, true, true), 'https://[::1]:3000');
+});
+
+// --- T3: hosting hardening ---
+import { publicError } from './lib.mjs';
+
+test('originFrom: forwarded headers are ignored unless a proxy is explicitly trusted', () => {
+  const spoof = { host: 'real.example', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'evil.example' };
+  assert.equal(originFrom(spoof, false), 'http://real.example', 'default: not trusted');
+  assert.equal(originFrom(spoof, false, false), 'http://real.example');
+  assert.equal(originFrom(spoof, false, true), 'https://evil.example', 'only when the operator says a proxy sets these');
+});
+
+test('publicError: provider and SDK error text never reaches the chat; our own messages do', () => {
+  assert.equal(publicError('codex turn failed: 401 Incorrect API key provided: sk-proj-abc***xyz'), 'codex had a problem with that turn (details are in the server log)');
+  assert.equal(publicError('codex could not run: spawn ENOENT C:/secret/path'), 'codex had a problem with that turn (details are in the server log)');
+  assert.equal(publicError('codex error: boom'), 'codex had a problem with that turn (details are in the server log)');
+  assert.equal(publicError('codex: sandbox denied write'), 'codex had a problem with that turn (details are in the server log)');
+  assert.equal(publicError('the saved codex session is gone, starting a new session'), 'the saved codex session is gone, starting a new session');
 });
