@@ -5,6 +5,7 @@ import http from 'node:http';
 import { generateKeyPairSync } from 'node:crypto';
 import { createApp } from './app.mjs';
 import { unbox } from './crypto.mjs';
+import { ImportError } from './importer.mjs';
 import { dev } from './oauth.mjs';
 import { createStore } from './store.mjs';
 
@@ -12,7 +13,8 @@ const KEY = 'sk-ant-api03-' + 'A'.repeat(40);
 async function boot() {
   const store = createStore(), calls = [];
   const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048, publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
-  const driver = { start: async (s) => calls.push(['start', s.id]), stop: async (id) => calls.push(['stop', id]), wipe: async (id) => calls.push(['wipe', id]), drop: async (id, sub) => calls.push(['drop', id, sub]) };
+  let startError = null;
+  const driver = { start: async (s) => { if (startError) throw startError; calls.push(['start', s.id]); }, stop: async (id) => calls.push(['stop', id]), wipe: async (id) => calls.push(['wipe', id]), drop: async (id, sub) => calls.push(['drop', id, sub]) };
   let origin;
   const config = { get origin() { return origin; }, secure: false, inviteTtlMs: 60000, sessionUrl: (id) => `http://${id}.sessions.test` };
   const server = http.createServer((req, res) => handler(req, res));
@@ -32,7 +34,7 @@ async function boot() {
     const login = async (who = 'ann') => { const s = await call('GET', `/auth/dev/start?who=${who}`); const cb = await call('GET', s.headers.get('location').replace(origin, '')); assert.equal(cb.status, 302); return cb; };
     return { call, jar, login };
   };
-  return { store, privateKey, calls, origin, client, close: () => new Promise((r) => { server.closeAllConnections(); server.close(r); store.close(); }) };
+  return { store, privateKey, calls, origin, client, failStartWith: (e) => { startError = e; }, close: () => new Promise((r) => { server.closeAllConnections(); server.close(r); store.close(); }) };
 }
 const create = (c, over = {}) => c.call('POST', '/api/sessions', { body: { name: 'notes app', key: KEY, ...over } });
 
@@ -89,7 +91,7 @@ test('CSRF: cross-origin, missing Origin, form content type, and cross-site fetc
 
 test('creating a session validates input, seals the key, and starts the worker', async () => {
   const t = await boot(), c = t.client(); await c.login();
-  for (const bad of [{ name: '' }, { name: '<script>' }, { key: 'sk-ant-short' }, { key: 'not a key' }, { agent: 'codex' }, { mode: 'yolo' }, { budgetUsd: -1 }, { budgetUsd: 'x' }, { source: { type: 'github', repo: '../../etc' } }, { source: { type: 'github', repo: 'a/b/c' } }]) {
+  for (const bad of [{ name: '' }, { name: '<script>' }, { key: 'sk-ant-short' }, { key: 'not a key' }, { agent: 'codex' }, { mode: 'yolo' }, { budgetUsd: -1 }, { budgetUsd: 'x' }, { source: { type: 'github', repo: '../../etc' } }, { source: { type: 'github', repo: 'a/b/c' } }, { source: { type: 'github', repo: 'https://github.com.evil.com/a/b' } }, { source: { type: 'url', repo: 'a/b' } }, { source: 'a/b' }]) {
     assert.equal((await create(c, bad)).status, 400, JSON.stringify(bad));
   }
   const r = await create(c, { budgetUsd: 2, mode: 'trusted' });
@@ -101,6 +103,21 @@ test('creating a session validates input, seals the key, and starts the worker',
   assert.throws(() => unbox(t.privateKey, row.key_sealed, 'other'), 'bound to this session');
   assert.deepEqual(t.calls[0], ['start', s.id]); assert.equal(row.status, 'running');
   assert(!JSON.stringify((await c.call('GET', '/api/sessions')).json()).includes('key_sealed'));
+  await t.close();
+});
+
+test('a GitHub source is validated and normalised; an import failure says why and leaves no session or key behind', async () => {
+  const t = await boot(), c = t.client(); await c.login();
+  const ok = await create(c, { source: { type: 'github', repo: 'https://github.com/Acme/site.git' } });
+  assert.equal(ok.status, 201); assert.equal(ok.json().source, 'Acme/site');
+  t.failStartWith(new ImportError('repo not found or not public'));
+  const bad = await create(c, { source: { type: 'github', repo: 'acme/private' } });
+  assert.equal(bad.status, 422); assert.match(bad.json().error, /repo not found or not public/);
+  assert.equal(t.store.allSessions().length, 1, 'the failed session is gone');
+  assert.equal(t.calls.filter((x) => x[0] === 'wipe').length, 1);
+  t.failStartWith(new Error('ENOENT C:\secret\path'));
+  const broken = await create(c);
+  assert.equal(broken.status, 502); assert(!broken.text.includes('secret'), 'system errors are never shown');
   await t.close();
 });
 

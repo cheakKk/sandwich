@@ -4,20 +4,9 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
+import { tar } from './testtar.mjs';
 import { importRepo, parseRepo } from './importer.mjs';
 
-// a tiny tar writer: entries are [name, content | null (dir), typeflag?, linkname?]
-function tar(entries) {
-  const out = [];
-  for (const [name, data, type = data === null ? '5' : '0', link = ''] of entries) {
-    const body = data === null ? Buffer.alloc(0) : Buffer.from(data);
-    const h = Buffer.alloc(512);
-    h.write(name, 0); h.write('0000644\0', 100); h.write(body.length.toString(8).padStart(11, '0') + '\0', 124); h.write(type, 156); h.write(link, 157); h.write('ustar\0', 257);
-    out.push(h, body, Buffer.alloc((512 - (body.length % 512)) % 512));
-  }
-  out.push(Buffer.alloc(1024));
-  return gzipSync(Buffer.concat(out));
-}
 const serve = (body, status = 200, headers = {}) => async () => new Response(body, { status, headers });
 const dest = () => join(mkdtempSync(join(tmpdir(), 'imp-')), 'work');
 
@@ -44,7 +33,7 @@ test('a gzip bomb, too many files, an oversize file and a duplicate name are ref
   await assert.rejects(importRepo('a/b', dest(), { fetch: serve(bomb), limits: { unpacked: 1e6 } }), /too large/);
   await assert.rejects(importRepo('a/b', dest(), { fetch: serve(tar([['r/1', 'x'], ['r/2', 'x'], ['r/3', 'x']])), limits: { files: 2 } }), /too many/);
   await assert.rejects(importRepo('a/b', dest(), { fetch: serve(tar([['r/1', 'x'.repeat(100)]])), limits: { file: 10 } }), /file too large/);
-  await assert.rejects(importRepo('a/b', dest(), { fetch: serve(tar([['r/1', 'x'], ['r/1', 'y']])) }), /EEXIST/);
+  await assert.rejects(importRepo('a/b', dest(), { fetch: serve(tar([['r/1', 'x'], ['r/1', 'y']])) }), /duplicate file names/);
   await assert.rejects(importRepo('a/b', dest(), { fetch: serve(Buffer.alloc(100)), limits: { download: 10 } }), /too large/);
   await assert.rejects(importRepo('a/b', dest(), { fetch: serve('not gzip') }), /corrupt/);
 });

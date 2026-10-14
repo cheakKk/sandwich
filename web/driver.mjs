@@ -2,12 +2,13 @@
 // signing key. It is for development and tests only: a child process is not an isolation boundary, so it refuses to run in
 // production and never marks the worker as sandboxed (so Trusted mode stays refused here). The container driver replaces it.
 import { spawn } from 'node:child_process';
-import { mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sign } from '../assert.mjs';
 import { deriveKey, newToken } from './crypto.mjs';
+import { importRepo } from './importer.mjs';
 
 const WORKER = fileURLToPath(new URL('../server.js', import.meta.url));
 // The worker gets only what it needs. Nothing from the control plane's environment (keys, secrets, tokens) is inherited.
@@ -25,7 +26,7 @@ export const workerEnvFor = ({ env, session, port, data, masterKey, proxyUrl, pr
   ...extra,
 });
 
-export function createLocalDriver({ store, masterKey, baseDir, proxyUrl, workerEnv = {}, env = process.env, log = () => {} }) {
+export function createLocalDriver({ store, masterKey, baseDir, proxyUrl, workerEnv = {}, env = process.env, fetch: fetchFn = globalThis.fetch, log = () => {} }) {
   if (env.NODE_ENV === 'production') throw new Error('the local-process driver is for development only and will not run in production');
   if (!masterKey || masterKey.length < 32) throw new Error('masterKey must be at least 32 characters');
   const running = new Map(); // sessionId -> { child, port }
@@ -34,6 +35,14 @@ export function createLocalDriver({ store, masterKey, baseDir, proxyUrl, workerE
   async function start(session) {
     if (running.has(session.id)) return running.get(session.id);
     const { work, data } = dirs(session.id);
+    // A repo is imported once, before the worker exists. The marker lives beside work/ (not in it), so a restart never re-imports over
+    // the team's changes, and a start interrupted mid-import (no marker) begins again from nothing.
+    const marker = join(baseDir, session.id, 'imported');
+    if (session.source !== 'empty' && !existsSync(marker)) {
+      rmSync(work, { recursive: true, force: true });
+      await importRepo(session.source, work, { fetch: fetchFn });
+      writeFileSync(marker, '');
+    }
     mkdirSync(work, { recursive: true }); mkdirSync(data, { recursive: true });
     const port = await freePort();
     const proxyToken = newToken(32);

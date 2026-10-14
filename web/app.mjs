@@ -1,10 +1,10 @@
 // The control plane's HTTP API: sign-in, who you are, and creating and managing sessions. Everything state-changing is
 // same-origin JSON only (see csrfOk). Unknown or not-yours sessions both answer 404, so ids cannot be probed.
 import { box, hashToken, newToken, pkceChallenge, sameString } from './crypto.mjs';
+import { ImportError, parseRepo } from './importer.mjs';
 
 const MAX_BODY = 16 * 1024;
 const KEY_RE = /^sk-ant-[A-Za-z0-9_-]{20,300}$/;
-const REPO_RE = /^[A-Za-z0-9_.-]{1,39}\/[A-Za-z0-9_.-]{1,100}$/;
 const NAME_RE = /^[\w .-]{1,60}$/;
 export const MAX_SESSIONS_PER_USER = 3;
 
@@ -96,8 +96,10 @@ export function createApp({ store, boxKey, config, providers, driver, log = () =
       if (b.agent !== undefined && b.agent !== 'claude') return fail(res, 400, 'only claude is available for hosted sessions');
       if (b.mode !== undefined && !['guarded', 'trusted'].includes(b.mode)) return fail(res, 400, 'mode must be guarded or trusted');
       if (typeof b.key !== 'string' || !KEY_RE.test(b.key)) return fail(res, 400, 'an Anthropic API key (sk-ant-...) is required; it is used only for this session');
-      const source = b.source?.type === 'github' ? b.source.repo : 'empty';
-      if (source !== 'empty' && !REPO_RE.test(source)) return fail(res, 400, 'source.repo must look like owner/name');
+      let source = 'empty';
+      if (b.source?.type === 'github') {
+        try { const r = parseRepo(b.source.repo); source = `${r.owner}/${r.repo}`; } catch { return fail(res, 400, 'source.repo must be a public GitHub repo: owner/name or https://github.com/owner/name'); }
+      } else if (b.source !== undefined && b.source?.type !== 'empty') return fail(res, 400, 'source must be empty or a github repo');
       const budget = b.budgetUsd === undefined || b.budgetUsd === null ? null : Number(b.budgetUsd);
       if (budget !== null && !(budget > 0 && budget <= 1000)) return fail(res, 400, 'budgetUsd must be between 0 and 1000');
       if (limited('create:' + user.id, 10, 3600000)) return fail(res, 429, 'too many sessions created, try again later');
@@ -105,7 +107,13 @@ export function createApp({ store, boxKey, config, providers, driver, log = () =
       if (live >= MAX_SESSIONS_PER_USER) return fail(res, 409, `you can have ${MAX_SESSIONS_PER_USER} sessions at a time; delete one first`);
       const id = store.createSession({ ownerId: user.id, name: b.name, source, mode: b.mode ?? 'guarded', budgetUsd: budget });
       store.update(id, { key_sealed: box(boxKey, b.key, id) }); // boxed to the key proxy's public key at once; this process cannot read it back
-      try { await driver.start(store.session(id)); store.update(id, { status: 'running', last_active: Date.now() }); } catch (e) { log('start failed:', e.message); store.update(id, { status: 'failed' }); return fail(res, 502, 'could not start the session'); }
+      try { await driver.start(store.session(id)); store.update(id, { status: 'running', last_active: Date.now() }); } catch (e) {
+        if (e instanceof ImportError) { // the visitor's repo was the problem: say why, and leave no half-made session (or its key) behind
+          await driver.wipe(id); store.deleteSession(id);
+          return fail(res, 422, 'could not import the repo: ' + e.message);
+        }
+        log('start failed:', e.message); store.update(id, { status: 'failed' }); return fail(res, 502, 'could not start the session');
+      }
       return send(res, 201, publicSession(store.session(id), store.member(id, user.id)));
     }
 

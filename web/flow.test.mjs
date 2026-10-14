@@ -3,12 +3,13 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import http from 'node:http';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as pjoin } from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
 import WebSocket from 'ws';
 import { sign } from '../assert.mjs';
+import { tar } from './testtar.mjs';
 import { createApp } from './app.mjs';
 import { deriveKey } from './crypto.mjs';
 import { createLocalDriver, workerEnvFor } from './driver.mjs';
@@ -22,11 +23,11 @@ const SUFFIX = '.sessions.test';
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const listen = (s) => new Promise((r) => s.listen(0, '127.0.0.1', () => r(s.address().port)));
 
-async function boot() {
+async function boot({ fetch: fetchFn } = {}) {
   const store = createStore();
   const keys = generateKeyPairSync('rsa', { modulusLength: 2048, publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
   const baseDir = mkdtempSync(pjoin(tmpdir(), 'sandwich-flow-'));
-  const driver = createLocalDriver({ store, masterKey: MASTER, baseDir, proxyUrl: 'http://127.0.0.1:9', workerEnv: { FAKE: '1' } });
+  const driver = createLocalDriver({ store, masterKey: MASTER, baseDir, proxyUrl: 'http://127.0.0.1:9', workerEnv: { FAKE: '1' }, fetch: fetchFn });
   let origin, gwPort;
   const config = { get origin() { return origin; }, secure: false, inviteTtlMs: 60000, hostSuffix: SUFFIX, sessionUrl: (id) => `http://${id}${SUFFIX}` };
   const app = createApp({ store, boxKey: keys.publicKey, config, providers: { dev: dev() }, driver, log: () => {} });
@@ -167,4 +168,27 @@ test('deleting a session stops its worker and wipes its folders', async () => {
   assert.equal(t.driver.portOf(s.id), undefined); assert(!existsSync(work));
   assert.equal(t.store.session(s.id), undefined);
   await t.close();
+});
+
+test('a GitHub repo is imported once at creation; a restart keeps the team changes; a failed import leaves nothing', async () => {
+  let calls = 0, reply = () => new Response(tar([['site-1a2b/', null], ['site-1a2b/README.md', 'hello'], ['site-1a2b/src/app.js', 'x'], ['site-1a2b/.git/config', 'token']]));
+  const t = await boot({ fetch: async (url) => { calls++; assert(String(url).startsWith('https://codeload.github.com/acme/'), String(url)); return reply(); } });
+  try {
+  await t.login('maya');
+  const r = await t.call('POST', '/api/sessions', { name: 'imported', key: KEY, source: { type: 'github', repo: 'acme/site' } });
+  assert.equal(r.status, 201); const s = r.json();
+  const { work } = t.driver.dirs(s.id);
+  assert.equal(readFileSync(pjoin(work, 'README.md'), 'utf8'), 'hello'); assert(existsSync(pjoin(work, 'src', 'app.js'))); assert(!existsSync(pjoin(work, '.git')));
+  // the team edits a file, the worker stops and starts again: no second download, no overwrite
+  writeFileSync(pjoin(work, 'README.md'), 'team edit');
+  await t.driver.stop(s.id); await t.driver.start(t.store.session(s.id));
+  assert.equal(calls, 1); assert.equal(readFileSync(pjoin(work, 'README.md'), 'utf8'), 'team edit');
+  // a repo that is not there: a clear error, no session row, no folder, and the slot is free again
+  reply = () => new Response('', { status: 404 });
+  const before = t.store.allSessions().length;
+  const bad = await t.call('POST', '/api/sessions', { name: 'nope', key: KEY, source: { type: 'github', repo: 'acme/private' } });
+  assert.equal(bad.status, 422); assert.match(bad.json().error, /not found or not public/);
+  assert.equal(t.store.allSessions().length, before);
+  assert.equal(readdirSync(t.baseDir).length, 1, 'only the good session has a folder');
+  } finally { await t.close(); }
 });
