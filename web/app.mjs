@@ -1,6 +1,6 @@
 // The control plane's HTTP API: sign-in, who you are, and creating and managing sessions. Everything state-changing is
 // same-origin JSON only (see csrfOk). Unknown or not-yours sessions both answer 404, so ids cannot be probed.
-import { hashToken, newToken, pkceChallenge, sameString, seal } from './crypto.mjs';
+import { box, hashToken, newToken, pkceChallenge, sameString } from './crypto.mjs';
 
 const MAX_BODY = 16 * 1024;
 const KEY_RE = /^sk-ant-[A-Za-z0-9_-]{20,300}$/;
@@ -8,7 +8,7 @@ const REPO_RE = /^[A-Za-z0-9_.-]{1,39}\/[A-Za-z0-9_.-]{1,100}$/;
 const NAME_RE = /^[\w .-]{1,60}$/;
 export const MAX_SESSIONS_PER_USER = 3;
 
-export function createApp({ store, kek, config, providers, driver, log = () => {} }) {
+export function createApp({ store, boxKey, config, providers, driver, log = () => {} }) {
   const cookieName = (n) => (config.secure ? '__Host-' + n : n);
   const PRE = cookieName('swpre'), WEB = cookieName('sw');
 
@@ -104,7 +104,7 @@ export function createApp({ store, kek, config, providers, driver, log = () => {
       const live = store.sessionsOf(user.id).filter((s) => s.owner_id === user.id).length;
       if (live >= MAX_SESSIONS_PER_USER) return fail(res, 409, `you can have ${MAX_SESSIONS_PER_USER} sessions at a time; delete one first`);
       const id = store.createSession({ ownerId: user.id, name: b.name, source, mode: b.mode ?? 'guarded', budgetUsd: budget });
-      store.update(id, { key_sealed: seal(kek, b.key, id) }); // sealed at once; only the key proxy ever opens it
+      store.update(id, { key_sealed: box(boxKey, b.key, id) }); // boxed to the key proxy's public key at once; this process cannot read it back
       try { await driver.start(store.session(id)); store.update(id, { status: 'running', last_active: Date.now() }); } catch (e) { log('start failed:', e.message); store.update(id, { status: 'failed' }); return fail(res, 502, 'could not start the session'); }
       return send(res, 201, publicSession(store.session(id), store.member(id, user.id)));
     }

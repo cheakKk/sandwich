@@ -14,9 +14,11 @@ export function createStore(file = ':memory:') {
     create table if not exists websessions(hash text primary key, user_id text not null references users(id) on delete cascade, created integer, expires integer);
     create table if not exists preauth(hash text primary key, provider text, state_hash text, verifier text, nonce text, expires integer);
     create table if not exists sessions(id text primary key, owner_id text not null references users(id), name text, agent text, mode text default 'guarded', source text, status text default 'new',
-      created integer, budget_usd real, key_sealed text, port integer, dir text, proxy_hash text, last_active integer);
+      created integer, budget_usd real, key_sealed text, port integer, dir text, last_active integer);
     create table if not exists members(session_id text references sessions(id) on delete cascade, sub text, name text, role text, cap text, created integer, revoked integer default 0, primary key(session_id, sub));
     create table if not exists invites(hash text primary key, session_id text references sessions(id) on delete cascade, role text, expires integer, created_by text);
+    create table if not exists proxy_tokens(hash text primary key, session_id text references sessions(id) on delete cascade, expires integer);
+    create table if not exists ledger(id integer primary key, session_id text references sessions(id) on delete cascade, ts integer, tokens_in integer, tokens_out integer, usd real);
     create table if not exists guests(hash text primary key, session_id text references sessions(id) on delete cascade, sub text, expires integer);`);
   const q = (sql) => db.prepare(sql);
   const now = () => Date.now();
@@ -104,8 +106,16 @@ export function createStore(file = ':memory:') {
       const r = q('select * from guests where hash = ?').get(hashToken(token));
       return r && r.expires > now() ? { sessionId: r.session_id, sub: r.sub } : null;
     },
+    // credential proxy: a token the sandbox holds instead of the real key, bound to one session, with an expiry
+    mintProxyToken(sessionId, token, ttlMs) { q('insert into proxy_tokens values(?,?,?)').run(hashToken(token), sessionId, now() + ttlMs); },
+    sessionByProxyToken(token) {
+      const r = token && q('select session_id, expires from proxy_tokens where hash = ?').get(hashToken(token));
+      return r && r.expires > now() ? s.session(r.session_id) : null;
+    },
+    addLedger: (sessionId, tin, tout, usd) => q('insert into ledger(session_id, ts, tokens_in, tokens_out, usd) values(?,?,?,?,?)').run(sessionId, now(), tin, tout, usd),
+    spentUsd: (sessionId) => q('select coalesce(sum(usd), 0) as n from ledger where session_id = ?').get(sessionId).n,
     purge() { // expired rows
-      for (const t of ['websessions', 'preauth', 'invites', 'guests']) q(`delete from ${t} where expires < ?`).run(now());
+      for (const t of ['websessions', 'preauth', 'invites', 'guests', 'proxy_tokens']) q(`delete from ${t} where expires < ?`).run(now());
     },
   };
   return s;

@@ -2,22 +2,23 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import http from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { generateKeyPairSync } from 'node:crypto';
 import { createApp } from './app.mjs';
-import { open } from './crypto.mjs';
+import { unbox } from './crypto.mjs';
 import { dev } from './oauth.mjs';
 import { createStore } from './store.mjs';
 
 const KEY = 'sk-ant-api03-' + 'A'.repeat(40);
 async function boot() {
-  const store = createStore(), kek = randomBytes(32), calls = [];
+  const store = createStore(), calls = [];
+  const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048, publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
   const driver = { start: async (s) => calls.push(['start', s.id]), stop: async (id) => calls.push(['stop', id]), wipe: async (id) => calls.push(['wipe', id]), drop: async (id, sub) => calls.push(['drop', id, sub]) };
   let origin;
   const config = { get origin() { return origin; }, secure: false, inviteTtlMs: 60000, sessionUrl: (id) => `http://${id}.sessions.test` };
   const server = http.createServer((req, res) => handler(req, res));
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   origin = `http://127.0.0.1:${server.address().port}`;
-  const handler = createApp({ store, kek, config, providers: { dev: dev() }, driver, log: () => {} });
+  const handler = createApp({ store, boxKey: publicKey, config, providers: { dev: dev() }, driver, log: () => {} });
   const client = () => { // a browser with a cookie jar
     const jar = new Map();
     const call = async (method, path, { body, headers = {}, same = true, raw } = {}) => {
@@ -31,7 +32,7 @@ async function boot() {
     const login = async (who = 'ann') => { const s = await call('GET', `/auth/dev/start?who=${who}`); const cb = await call('GET', s.headers.get('location').replace(origin, '')); assert.equal(cb.status, 302); return cb; };
     return { call, jar, login };
   };
-  return { store, kek, calls, origin, client, close: () => new Promise((r) => { server.closeAllConnections(); server.close(r); store.close(); }) };
+  return { store, privateKey, calls, origin, client, close: () => new Promise((r) => { server.closeAllConnections(); server.close(r); store.close(); }) };
 }
 const create = (c, over = {}) => c.call('POST', '/api/sessions', { body: { name: 'notes app', key: KEY, ...over } });
 
@@ -96,8 +97,8 @@ test('creating a session validates input, seals the key, and starts the worker',
   const s = r.json();
   assert.equal(s.role, 'owner'); assert(!JSON.stringify(s).includes('sk-ant'), 'the key is never returned');
   const row = t.store.session(s.id);
-  assert(!row.key_sealed.includes(KEY)); assert.equal(open(t.kek, row.key_sealed, s.id), KEY);
-  assert.throws(() => open(t.kek, row.key_sealed, 'other'), 'sealed to this session');
+  assert(!row.key_sealed.includes(KEY)); assert.equal(unbox(t.privateKey, row.key_sealed, s.id), KEY);
+  assert.throws(() => unbox(t.privateKey, row.key_sealed, 'other'), 'bound to this session');
   assert.deepEqual(t.calls[0], ['start', s.id]); assert.equal(row.status, 'running');
   assert(!JSON.stringify((await c.call('GET', '/api/sessions')).json()).includes('key_sealed'));
   await t.close();
