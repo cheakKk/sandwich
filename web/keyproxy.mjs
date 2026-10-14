@@ -41,6 +41,7 @@ export function createKeyProxy({ store, privateKey, upstream = 'https://api.anth
     if (req.method !== 'POST' || !PATHS.has(url.pathname)) return fail(res, 404, 'not_found_error', 'not found');
     const session = store.sessionByProxyToken(token);
     if (!session || !session.key_sealed) return fail(res, 401, 'authentication_error', 'invalid credentials');
+    if (Date.now() - (session.last_active ?? 0) > 60000) store.update(session.id, { last_active: Date.now() }); // agent work counts as activity for retention
 
     let body;
     try { body = JSON.parse(await readBody(req)); } catch (e) { return fail(res, e.code === 413 ? 413 : 400, 'invalid_request_error', e.code === 413 ? 'request too large' : 'bad request'); }

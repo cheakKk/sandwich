@@ -8,7 +8,7 @@ const KEY_RE = /^sk-ant-[A-Za-z0-9_-]{20,300}$/;
 const NAME_RE = /^[\w .-]{1,60}$/;
 export const MAX_SESSIONS_PER_USER = 3;
 
-export function createApp({ store, boxKey, config, providers, driver, log = () => {} }) {
+export function createApp({ store, boxKey, config, providers, driver, lifecycle, log = () => {} }) {
   const cookieName = (n) => (config.secure ? '__Host-' + n : n);
   const PRE = cookieName('swpre'), WEB = cookieName('sw');
 
@@ -48,7 +48,7 @@ export function createApp({ store, boxKey, config, providers, driver, log = () =
   });
 
   const publicSession = (s, me) => ({ id: s.id, name: s.name, agent: s.agent, mode: s.mode, source: s.source, status: s.status, created: s.created, budgetUsd: s.budget_usd, role: me?.role, url: config.sessionUrl(s.id) });
-  const memberOf = (user, sid) => { const m = user && store.member(sid, user.id); return m && !m.revoked && store.session(sid) ? m : null; };
+  const memberOf = (user, sid) => { const m = user && store.member(sid, user.id); return m && !m.revoked && store.session(sid)?.status !== 'deleting' && store.session(sid) ? m : null; };
 
   async function handle(req, res) {
     const url = new URL(req.url, config.origin);
@@ -87,6 +87,10 @@ export function createApp({ store, boxKey, config, providers, driver, log = () =
     if (req.method !== 'GET' && req.method !== 'HEAD' && !csrfOk(req)) return fail(res, 403, 'cross-site request refused');
     if (!user) return fail(res, 401, 'sign in first');
     if (path === '/auth/logout' && req.method === 'POST') { store.endWebSession(cookiesOf(req)[WEB]); setCookie(res, WEB, '', 0); return send(res, 200, { ok: true }); }
+    if (path === '/api/me' && req.method === 'DELETE') { // delete my account: every session I host, my logins, then me
+      await lifecycle.deleteAccount(user.id); setCookie(res, WEB, '', 0);
+      return send(res, 200, { ok: true });
+    }
     if (path === '/api/me') return send(res, 200, { id: user.id, name: user.name, provider: user.provider });
 
     if (path === '/api/sessions' && req.method === 'GET') return send(res, 200, { sessions: store.sessionsOf(user.id).map((s) => publicSession(s, store.member(s.id, user.id))) });
@@ -109,7 +113,7 @@ export function createApp({ store, boxKey, config, providers, driver, log = () =
       store.update(id, { key_sealed: box(boxKey, b.key, id) }); // boxed to the key proxy's public key at once; this process cannot read it back
       try { await driver.start(store.session(id)); store.update(id, { status: 'running', last_active: Date.now() }); } catch (e) {
         if (e instanceof ImportError) { // the visitor's repo was the problem: say why, and leave no half-made session (or its key) behind
-          await driver.wipe(id); store.deleteSession(id);
+          await lifecycle.deleteSession(id);
           return fail(res, 422, 'could not import the repo: ' + e.message);
         }
         log('start failed:', e.message); store.update(id, { status: 'failed' }); return fail(res, 502, 'could not start the session');
@@ -126,7 +130,7 @@ export function createApp({ store, boxKey, config, providers, driver, log = () =
       if (!sub1 && req.method === 'GET') return send(res, 200, { ...publicSession(s, me), members: store.members(sid).map(({ sub, name, role, cap, revoked }) => ({ sub, name, role, cap, revoked: !!revoked })) });
       if (!sub1 && req.method === 'DELETE') {
         if (me.role !== 'owner') return fail(res, 403, 'only the owner can delete a session');
-        await driver.stop(sid); await driver.wipe(sid); store.deleteSession(sid);
+        await lifecycle.deleteSession(sid);
         return send(res, 200, { ok: true });
       }
       if (sub1 === 'enter' && req.method === 'POST') { // hosts open the session on its own origin with a single-use link

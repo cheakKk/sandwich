@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import http from 'node:http';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as pjoin } from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
@@ -14,6 +14,7 @@ import { createApp } from './app.mjs';
 import { deriveKey } from './crypto.mjs';
 import { createLocalDriver, workerEnvFor } from './driver.mjs';
 import { createGateway } from './gateway.mjs';
+import { createLifecycle } from './lifecycle.mjs';
 import { dev } from './oauth.mjs';
 import { createStore } from './store.mjs';
 
@@ -23,14 +24,15 @@ const SUFFIX = '.sessions.test';
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const listen = (s) => new Promise((r) => s.listen(0, '127.0.0.1', () => r(s.address().port)));
 
-async function boot({ fetch: fetchFn } = {}) {
-  const store = createStore();
+async function boot({ fetch: fetchFn, dbFile = false, log = () => {} } = {}) {
+  const dbDir = mkdtempSync(pjoin(tmpdir(), 'sandwich-cp-'));
+  const store = createStore(dbFile ? pjoin(dbDir, 'control.db') : ':memory:');
   const keys = generateKeyPairSync('rsa', { modulusLength: 2048, publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
   const baseDir = mkdtempSync(pjoin(tmpdir(), 'sandwich-flow-'));
-  const driver = createLocalDriver({ store, masterKey: MASTER, baseDir, proxyUrl: 'http://127.0.0.1:9', workerEnv: { FAKE: '1' }, fetch: fetchFn });
+  const driver = createLocalDriver({ store, masterKey: MASTER, baseDir, proxyUrl: 'http://127.0.0.1:9', workerEnv: { FAKE: '1' }, fetch: fetchFn, log });
   let origin, gwPort;
   const config = { get origin() { return origin; }, secure: false, inviteTtlMs: 60000, hostSuffix: SUFFIX, sessionUrl: (id) => `http://${id}${SUFFIX}` };
-  const app = createApp({ store, boxKey: keys.publicKey, config, providers: { dev: dev() }, driver, log: () => {} });
+  const app = createApp({ store, boxKey: keys.publicKey, config, providers: { dev: dev() }, driver, lifecycle: createLifecycle({ store, driver, log }), log });
   const gw = createGateway({ store, driver, masterKey: MASTER, config });
   const control = http.createServer(app), gateway = http.createServer(gw.handler);
   gateway.on('upgrade', gw.upgrade);
@@ -65,7 +67,7 @@ async function boot({ fetch: fetchFn } = {}) {
   const invite = async (s) => (await call('POST', `/api/sessions/${s.id}/invites`, {})).json().url.split('invite=')[1];
   const join = (host, inv, name, cookie) => gwReq(host, 'POST', '/_join', { headers: { origin: `http://${host}`, 'content-type': 'application/json', ...(cookie ? { cookie } : {}) }, body: JSON.stringify({ invite: inv, name }) });
   const close = async () => { await driver.stopAll(); control.closeAllConnections(); gateway.closeAllConnections(); control.close(); gateway.close(); store.close(); };
-  return { store, driver, call, login, gwReq, cookieFrom, socket, sessionOf, enter, invite, join, close, baseDir, origin };
+  return { store, driver, call, login, gwReq, cookieFrom, socket, sessionOf, enter, invite, join, close, baseDir, dbDir, origin, lifecycle: createLifecycle({ store, driver, log }) };
 }
 const say = async (ws, text) => { ws.send(JSON.stringify({ text })); await wait(300); };
 
@@ -190,5 +192,88 @@ test('a GitHub repo is imported once at creation; a restart keeps the team chang
   assert.equal(bad.status, 422); assert.match(bad.json().error, /not found or not public/);
   assert.equal(t.store.allSessions().length, before);
   assert.equal(readdirSync(t.baseDir).length, 1, 'only the good session has a folder');
+  } finally { await t.close(); }
+});
+
+// every byte under a path (files and folders, recursively), as one string, for searching
+const bytesUnder = (p) => { try { if (statSync(p).isDirectory()) return readdirSync(p).map((n) => bytesUnder(pjoin(p, n))).join('\n') + readdirSync(p).join('\n'); return readFileSync(p).toString('latin1'); } catch { return ''; } };
+
+test('deleting a session leaves no trace: canary strings are not in the database, its log, the folders or the logs', async () => {
+  const logs = [];
+  const CANARY_KEY = 'sk-ant-api03-' + 'CANARYKEY'.repeat(5), NAME = 'canaryproject', CHAT = 'CANARYCHATLINE', GUEST = 'canaryguest';
+  const t = await boot({ dbFile: true, log: (...a) => logs.push(a.join(' ')) });
+  try {
+    await t.login('maya');
+    const s = (await t.call('POST', '/api/sessions', { name: NAME, key: CANARY_KEY })).json();
+    const host = await t.enter(s);
+    const ws = t.socket(host.host, { cookie: host.cookie }); await ws.opened; await wait(500);
+    const inv = await t.invite(s); const g = await t.join(host.host, inv, GUEST);
+    const gws = t.socket(host.host, { cookie: t.cookieFrom(g) }); await gws.opened; await wait(500);
+    await say(gws, CHAT);
+    const everything = () => [bytesUnder(t.dbDir), bytesUnder(t.baseDir), logs.join('\n')].join('\n');
+    // the scan is not vacuous: before deleting, the name, guest and chat really are stored somewhere...
+    const before = everything();
+    for (const c of [NAME, GUEST, CHAT]) assert(before.includes(c), c + ' should exist before deletion');
+    assert(!before.includes('CANARYKEY'), 'the API key is never stored or logged in the clear, even while the session lives');
+    ws.close(); gws.close();
+    assert.equal((await t.call('DELETE', `/api/sessions/${s.id}`)).status, 200);
+    const after = everything();
+    for (const c of [NAME, GUEST, CHAT, 'CANARYKEY', s.id]) assert(!after.includes(c), c + ' survived deletion');
+    assert.equal(readdirSync(t.baseDir).length, 0);
+    // deleted means unreachable too
+    assert.equal((await t.call('GET', `/api/sessions/${s.id}`)).status, 404);
+  } finally { await t.close(); }
+});
+
+test('sweep: abandoned and idle sessions, orphan folders and half-finished deletes are removed; active ones are kept', async () => {
+  const t = await boot();
+  try {
+    await t.login('maya');
+    const keep = (await t.call('POST', '/api/sessions', { name: 'keep', key: KEY })).json();
+    const idle = (await t.call('POST', '/api/sessions', { name: 'idle', key: KEY })).json();
+    const stuck = (await t.call('POST', '/api/sessions', { name: 'stuck', key: KEY })).json();
+    const day = 86400000, old = Date.now() - 40 * day;
+    await t.driver.stop(idle.id);
+    t.store.update(idle.id, { last_active: old });
+    t.store.update(stuck.id, { status: 'deleting' });
+    const orphan = pjoin(t.baseDir, 's' + 'a'.repeat(16)); mkdirSync(pjoin(orphan, 'work'), { recursive: true }); writeFileSync(pjoin(orphan, 'work', 'f'), 'x');
+    const done = await t.lifecycle.sweep();
+    assert.deepEqual(done, { sessions: 2, folders: 1 });
+    assert.deepEqual(t.store.allSessions().map((x) => x.id), [keep.id]);
+    assert(!existsSync(orphan));
+    // a session with a running worker is never swept as idle, however old its last_active says
+    t.store.update(keep.id, { last_active: old });
+    assert.deepEqual(await t.lifecycle.sweep(), { sessions: 0, folders: 0 });
+    // a never-started session older than an hour is cleaned up
+    const half = t.store.createSession({ ownerId: t.store.session(keep.id).owner_id, name: 'half' });
+    t.store.db.prepare('update sessions set created = ? where id = ?').run(Date.now() - 2 * 3600000, half);
+    assert.equal((await t.lifecycle.sweep()).sessions, 1);
+  } finally { await t.close(); }
+});
+
+test('deleting my account deletes every session I host, my logins and me; others are untouched', async () => {
+  const t = await boot();
+  try {
+    await t.login('maya');
+    const a = (await t.call('POST', '/api/sessions', { name: 'a', key: KEY })).json();
+    const mayaId = t.store.session(a.id).owner_id;
+    const r = await t.call('DELETE', '/api/me');
+    assert.equal(r.status, 200);
+    assert.equal(t.store.user(mayaId), undefined); assert.equal(t.store.allSessions().length, 0); assert.equal(readdirSync(t.baseDir).length, 0);
+    assert.equal((await t.call('GET', '/api/me')).status, 401, 'the login is gone');
+  } finally { await t.close(); }
+});
+
+test('a session being deleted cannot be woken or opened', async () => {
+  const t = await boot();
+  try {
+    await t.login('maya');
+    const s = (await t.call('POST', '/api/sessions', { name: 'x', key: KEY })).json();
+    const host = await t.enter(s);
+    t.store.update(s.id, { status: 'deleting' });
+    await t.driver.stop(s.id);
+    await assert.rejects(t.driver.start(t.store.session(s.id)), /being deleted/);
+    assert.equal((await t.gwReq(host.host, 'GET', host.link.pathname + host.link.search)).status, 404, 'the gateway treats it as unknown');
+    assert.equal((await t.call('POST', `/api/sessions/${s.id}/enter`, {})).status, 404);
   } finally { await t.close(); }
 });

@@ -5,11 +5,12 @@ import { randomUUID } from 'node:crypto';
 import { hashToken } from './crypto.mjs';
 
 const WEB_TTL = 14 * 24 * 3600 * 1000;
+export const SID_RE = /^s[0-9a-f]{16}$/;
 const RESERVED = ['owner', 'agent', 'system', 'control-plane'];
 
 export function createStore(file = ':memory:') {
   const db = new DatabaseSync(file);
-  db.exec(`pragma journal_mode = wal; pragma foreign_keys = on;
+  db.exec(`pragma journal_mode = wal; pragma foreign_keys = on; pragma secure_delete = on;
     create table if not exists users(id text primary key, provider text not null, subject text not null, name text not null, created integer not null, unique(provider, subject));
     create table if not exists websessions(hash text primary key, user_id text not null references users(id) on delete cascade, created integer, expires integer);
     create table if not exists preauth(hash text primary key, provider text, state_hash text, verifier text, nonce text, expires integer);
@@ -69,6 +70,10 @@ export function createStore(file = ':memory:') {
       q(`update sessions set ${keys.map((k) => k + ' = ?').join(', ')} where id = ?`).run(...keys.map((k) => fields[k] ?? null), id);
     },
     deleteSession: (id) => q('delete from sessions where id = ?').run(id),
+    // an account goes only after its sessions are gone (sessions.owner_id has no cascade on purpose); web logins cascade
+    deleteUser: (id) => q('delete from users where id = ?').run(id),
+    // deleted rows are overwritten in place (secure_delete); this also empties the write-ahead log that could still hold old copies
+    scrub: () => db.exec('pragma wal_checkpoint(TRUNCATE)'),
     allSessions: () => q('select * from sessions').all(),
 
     // members: names are unique per session (case-insensitive) and cannot be reserved words

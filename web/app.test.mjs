@@ -6,6 +6,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { createApp } from './app.mjs';
 import { unbox } from './crypto.mjs';
 import { ImportError } from './importer.mjs';
+import { createLifecycle } from './lifecycle.mjs';
 import { dev } from './oauth.mjs';
 import { createStore } from './store.mjs';
 
@@ -20,7 +21,7 @@ async function boot() {
   const server = http.createServer((req, res) => handler(req, res));
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   origin = `http://127.0.0.1:${server.address().port}`;
-  const handler = createApp({ store, boxKey: publicKey, config, providers: { dev: dev() }, driver, log: () => {} });
+  const handler = createApp({ store, boxKey: publicKey, config, providers: { dev: dev() }, driver, lifecycle: createLifecycle({ store, driver }), log: () => {} });
   const client = () => { // a browser with a cookie jar
     const jar = new Map();
     const call = async (method, path, { body, headers = {}, same = true, raw } = {}) => {

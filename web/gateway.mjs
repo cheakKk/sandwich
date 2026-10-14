@@ -26,7 +26,7 @@ export function createGateway({ store, driver, masterKey, config, log = () => {}
     const h = String(host ?? '').toLowerCase();
     if (!h.endsWith(config.hostSuffix)) return null;
     const label = h.slice(0, -config.hostSuffix.length);
-    return SID.test(label) && store.session(label) ? label : null;
+    return SID.test(label) && store.session(label) && store.session(label).status !== 'deleting' ? label : null;
   };
   // who is this visitor in this session? Their cookie must belong to this very session and they must not be revoked.
   const visitor = (req, sid) => {

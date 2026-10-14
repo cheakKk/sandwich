@@ -2,7 +2,7 @@
 // signing key. It is for development and tests only: a child process is not an isolation boundary, so it refuses to run in
 // production and never marks the worker as sandboxed (so Trusted mode stays refused here). The container driver replaces it.
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +33,7 @@ export function createLocalDriver({ store, masterKey, baseDir, proxyUrl, workerE
   const dirs = (id) => ({ work: join(baseDir, id, 'work'), data: join(baseDir, id, 'data') });
 
   async function start(session) {
+    if (store.session(session.id)?.status === 'deleting') throw new Error('session is being deleted'); // nothing may wake a session mid-delete
     if (running.has(session.id)) return running.get(session.id);
     const { work, data } = dirs(session.id);
     // A repo is imported once, before the worker exists. The marker lives beside work/ (not in it), so a restart never re-imports over
@@ -69,6 +70,7 @@ export function createLocalDriver({ store, masterKey, baseDir, proxyUrl, workerE
     e.child.kill();
     setTimeout(resolve, 3000);
   });
+  const ids = () => (existsSync(baseDir) ? readdirSync(baseDir) : []);
   const wipe = async (id) => { rmSync(join(baseDir, id), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); };
 
   // ask the worker to close one person's sockets (revoked or role changed); it only believes a control-plane assertion
@@ -79,5 +81,5 @@ export function createLocalDriver({ store, masterKey, baseDir, proxyUrl, workerE
     await fetch(`http://127.0.0.1:${e.port}/internal/drop`, { method: 'POST', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify({ sub }) }).catch(() => {});
   }
 
-  return { start, stop, wipe, drop, portOf: (id) => running.get(id)?.port, isRunning: (id) => running.has(id), stopAll: () => Promise.all([...running.keys()].map(stop)), dirs };
+  return { start, stop, wipe, ids, drop, portOf: (id) => running.get(id)?.port, isRunning: (id) => running.has(id), stopAll: () => Promise.all([...running.keys()].map(stop)), dirs };
 }
