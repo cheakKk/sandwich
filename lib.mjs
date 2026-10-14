@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -135,3 +136,22 @@ export function takeBatch(queue) {
 // Errors that came from a provider or an SDK can contain keys, paths or account details, and the chat is shared with guests.
 // Those become one generic line (the original goes to the server log); our own messages pass through.
 export const publicError = (m) => (/^codex (turn failed|error|could not run)|^codex: /.test(m) ? 'codex had a problem with that turn (details are in the server log)' : m);
+
+// The agent runs commands for whoever steers it, so it only gets the environment it needs to work: paths, the host's own
+// provider login variables, proxy settings. No Sandwich setting or token, and no unrelated secret from the host's shell.
+const AGENT_ENV_OK = /^(PATH|PATHEXT|HOME|HOMEDRIVE|HOMEPATH|USER|USERNAME|LOGNAME|SHELL|LANG|LC_.*|TZ|TERM|TMPDIR|TEMP|TMP|SYSTEMROOT|WINDIR|COMSPEC|USERPROFILE|APPDATA|LOCALAPPDATA|PROGRAMDATA|PROGRAMFILES.*|COMMONPROGRAMFILES.*|OS|NUMBER_OF_PROCESSORS|PROCESSOR_.*|ANTHROPIC_.*|CLAUDE_.*|HTTPS?_PROXY|NO_PROXY|NODE_EXTRA_CA_CERTS|SSL_CERT_.*)$/i;
+export function agentEnv(env, extra = {}) {
+  const out = {};
+  for (const [k, v] of Object.entries(env)) if (AGENT_ENV_OK.test(k) && !/^SANDWICH_/i.test(k) && v != null) out[k] = v;
+  return { ...out, ...extra };
+}
+
+// A spawn function for the SDK's spawnClaudeCodeProcess option that starts the agent as another, unprivileged user (POSIX
+// only). Used by the hosted container so an approved shell command cannot read or edit the worker's own files.
+export function spawnAs(uid, gid) {
+  return (o) => {
+    const child = spawn(o.command, o.args, { cwd: o.cwd, env: o.env, signal: o.signal, uid, gid, stdio: ['pipe', 'pipe', 'pipe'] });
+    child.stderr.resume(); // drain it, otherwise a chatty agent can stall on a full pipe
+    return child;
+  };
+}

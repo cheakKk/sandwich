@@ -6,14 +6,14 @@
 import http from 'node:http';
 import https from 'node:https';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
 import { fakeCodex, runCodex } from './codex.mjs';
 import { claudeTurn, codexTurn, creditTurn, dayStart, effectiveCap, formatUsage, headsUp, overBudget, overCap, toolLimiter } from './usage.mjs';
-import { compactMemory, dbPath, originFrom, parseSummary, promptMemory, publicError, readScope, recap, takeBatch, ttlText } from './lib.mjs';
+import { agentEnv, compactMemory, dbPath, originFrom, parseSummary, promptMemory, publicError, readScope, recap, spawnAs, takeBatch, ttlText } from './lib.mjs';
 
 const PORT = Number(process.env.PORT) || 3000;
 const AGENT = process.env.AGENT === 'codex' ? 'codex' : 'claude'; // whose login/plan powers the session
@@ -44,6 +44,7 @@ process.on('unhandledRejection', (e) => console.error('unhandled:', e));
 const DB_FILE = dbPath(process.cwd(), process.env, homedir());
 mkdirSync(dirname(DB_FILE), { recursive: true });
 const db = new DatabaseSync(DB_FILE);
+for (const [p, mode] of [[dirname(DB_FILE), 0o700], [DB_FILE, 0o600]]) { try { chmodSync(p, mode); } catch { /* not supported on this platform */ } } // other local users cannot read it
 db.exec('pragma journal_mode = wal; pragma synchronous = normal;'); // every chat line is a write; avoid a full fsync for each
 db.exec('create table if not exists events(id integer primary key, ts text, user text, text text)');
 db.exec('create table if not exists tokens(token text primary key, kind text, role text, name text, expires integer)');
@@ -271,7 +272,7 @@ const TRUST_MEMBERS = process.env.CODEX_TRUST_MEMBERS === '1';
 const codexWritable = () => AGENT === 'codex' && sandbox === 'workspace-write';
 let codexBy = SYSTEM; // a Codex batch can hold several people's messages; the turn is credited to the first
 async function runCodexAgent() {
-  const codex = process.env.FAKE_CODEX ? fakeCodex() : new (await import('@openai/codex-sdk')).Codex(process.env.CODEX_API_KEY ? { apiKey: process.env.CODEX_API_KEY } : {});
+  const codex = process.env.FAKE_CODEX ? fakeCodex() : new (await import('@openai/codex-sdk')).Codex({ env: agentEnv(process.env), ...(process.env.CODEX_API_KEY && { apiKey: process.env.CODEX_API_KEY }) });
   await runCodex({
     codex,
     threadId: db.prepare("select v from kv where k = 'codex_thread'").get()?.v ?? null,
@@ -338,6 +339,10 @@ async function runAgent() {
     options: {
       cwd: process.cwd(),
       settingSources: [], // ignore the machine owner's personal allow-lists; roles decide here
+      // The agent (and every command an op approves) gets only the environment it needs: never SANDWICH_* settings or tokens.
+      env: agentEnv(process.env),
+      // Hosted: run the agent as another, unprivileged user so an approved command cannot read or edit the worker's files (POSIX).
+      ...(process.env.SANDWICH_AGENT_UID && { spawnClaudeCodeProcess: spawnAs(Number(process.env.SANDWICH_AGENT_UID), Number(process.env.SANDWICH_AGENT_GID ?? process.env.SANDWICH_AGENT_UID)) }),
       ...(Number(process.env.SANDWICH_MAX_BUDGET_USD) > 0 && { maxBudgetUsd: Number(process.env.SANDWICH_MAX_BUDGET_USD) }), // optional ceiling on what this session may spend on API usage
       allowedTools: ['Read', 'Glob', 'Grep'],
       hooks: { PreToolUse: [{ hooks: [guard] }] },

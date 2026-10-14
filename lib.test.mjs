@@ -272,3 +272,26 @@ test('publicError: provider and SDK error text never reaches the chat; our own m
   assert.equal(publicError('codex: sandbox denied write'), 'codex had a problem with that turn (details are in the server log)');
   assert.equal(publicError('the saved codex session is gone, starting a new session'), 'the saved codex session is gone, starting a new session');
 });
+
+// --- T4: the agent's process gets a clean environment ---
+import { agentEnv } from './lib.mjs';
+
+test('agentEnv: no Sandwich setting or token ever reaches the agent', () => {
+  const env = agentEnv({ SANDWICH_OWNER_TOKEN: 'secret', SANDWICH_DB: '/x', sandwich_lower: '1', PATH: '/bin', HOME: '/home/a' });
+  assert.deepEqual(Object.keys(env).sort(), ['HOME', 'PATH']);
+});
+
+test('agentEnv: the host\'s own provider login variables still pass, so a local session can run', () => {
+  const env = agentEnv({ ANTHROPIC_API_KEY: 'k', CLAUDE_CODE_OAUTH_TOKEN: 't', HTTPS_PROXY: 'p', PATH: '/bin', USERPROFILE: 'C:/u', SystemRoot: 'C:/Windows' });
+  for (const k of ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'HTTPS_PROXY', 'PATH', 'USERPROFILE', 'SystemRoot']) assert.ok(k in env, k);
+});
+
+test('agentEnv: unrelated secrets in the host environment are not passed along', () => {
+  const env = agentEnv({ AWS_SECRET_ACCESS_KEY: 'a', GITHUB_TOKEN: 'g', CODEX_API_KEY: 'c', OPENAI_API_KEY: 'o', NPM_TOKEN: 'n', PATH: '/bin' });
+  assert.deepEqual(Object.keys(env), ['PATH']);
+});
+
+test('agentEnv: extra values are added last and win', () => {
+  assert.equal(agentEnv({ PATH: '/bin' }, { ANTHROPIC_BASE_URL: 'http://proxy', PATH: '/override' }).ANTHROPIC_BASE_URL, 'http://proxy');
+  assert.equal(agentEnv({ PATH: '/bin' }, { PATH: '/override' }).PATH, '/override');
+});
