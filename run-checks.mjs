@@ -24,8 +24,8 @@ const canConnect = (port) => new Promise((resolve) => {
 // The checks talk to port 3000, so a real Sandwich running there would be tested by mistake. Refuse instead.
 if (await canConnect(3000)) { console.error('Port 3000 is in use (a real Sandwich?). Stop it before running the tests.'); process.exit(1); }
 
-const unitFiles = readdirSync(here).filter((f) => f.endsWith('.test.mjs'));
-record('unit tests', spawnSync('node', ['--test', ...unitFiles], { cwd: here, stdio: 'inherit' }));
+const unitFiles = [...readdirSync(here).filter((f) => f.endsWith('.test.mjs')), ...readdirSync(join(here, 'web')).filter((f) => f.endsWith('.test.mjs')).map((f) => 'web/' + f)];
+record('unit tests', spawnSync('node', ['--test', '--test-timeout=30000', ...unitFiles], { cwd: here, stdio: 'inherit' }));
 
 async function suite(env, files) {
   const dir = mkdtempSync(join(tmpdir(), 'sandwich-'));
