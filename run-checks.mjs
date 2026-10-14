@@ -56,6 +56,10 @@ await suite({ FAKE: '1' }, ['check-panels.mjs']);
 await suite({ FAKE: '1' }, ['check-die.mjs']);
 // hosted-style: tokens only via the first WebSocket message, forwarded headers not trusted, tiny unauthenticated limits
 await suite({ FAKE: '1', SANDWICH_STRICT_TOKENS: '1', SANDWICH_TRUST_PROXY: '', SANDWICH_AUTH_TIMEOUT_MS: '800', SANDWICH_MAX_UNAUTH: '5' }, ['check-hosted-auth.mjs']);
+// hosted authority: the worker only believes signed assertions from the control plane
+process.env.SANDWICH_ASSERT_KEY = randomBytes(32).toString('hex');
+await suite({ FAKE: '1', SANDWICH_SESSION_ID: 's1', SANDWICH_STRICT_TOKENS: '1', SANDWICH_TRUST_PROXY: '' }, ['check-hosted-assert.mjs']);
+delete process.env.SANDWICH_ASSERT_KEY;
 
 if (failed.length) { console.error('FAILED:\n  ' + failed.join('\n  ')); process.exit(1); }
 console.log('all checks passed');

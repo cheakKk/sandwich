@@ -15,6 +15,7 @@ import { WebSocketServer } from 'ws';
 import { fakeCodex, runCodex } from './codex.mjs';
 import { serveStatic } from './static.mjs';
 import { claudeTurn, codexTurn, creditTurn, dayStart, effectiveCap, formatUsage, headsUp, overBudget, overCap, toolLimiter } from './usage.mjs';
+import { verify } from './assert.mjs';
 import { agentEnv, compactMemory, dbPath, memorySnapshot, originFrom, parseSummary, promptMemory, publicError, readScope, recap, spawnAs, takeBatch, ttlText } from './lib.mjs';
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -85,8 +86,15 @@ const delToken = db.prepare('delete from tokens where token = ?');
 const setRole = db.prepare('update tokens set role = ? where token = ?');
 db.prepare("delete from tokens where kind = 'invite' and expires < ?").run(Date.now());
 // Who does this token belong to? Session tokens only; an unredeemed invite is not an identity.
+// Hosted mode: identity and roles come only from assertions signed by the control plane. Tokens, invites and role commands in this
+// process are switched off, so nothing the agent (or a guest) can do to this process's files or database changes who is allowed in.
+const ASSERT_KEY = process.env.SANDWICH_ASSERT_KEY || '';
+const HOSTED = ASSERT_KEY !== '';
+if (HOSTED && ASSERT_KEY.length < 32) { console.error('SANDWICH_ASSERT_KEY must be at least 32 characters'); process.exit(1); }
+const SID = process.env.SANDWICH_SESSION_ID || undefined; // this worker serves exactly one session
 const ownerHash = Buffer.from(hash(ownerToken));
 const whoIs = (t) => {
+  if (HOSTED) { const a = verify(ASSERT_KEY, t, { sid: SID }); return a && { role: a.role, name: a.name, sub: a.sub, cap: a.cap ?? null }; }
   const h = hash(t);
   if (timingSafeEqual(Buffer.from(h), ownerHash)) return { role: 'owner', name: 'owner' };
   const row = getToken.get(h);
@@ -371,16 +379,18 @@ async function runAgent() {
 
 // Structured data for the web UI, pushed whenever it changes, so the page never has to parse chat text.
 // Nothing internal (token hashes, keys) is ever included.
+// an explicit per-person cap: from the signed assertion when hosted, from this worker's own table otherwise
+const capSetting = (c) => (HOSTED ? (c.cap == null ? undefined : String(c.cap)) : getKv('cap:' + c.key));
 function peopleMsg() {
   const online = new Map();
   for (const c of clients.values()) if (!online.has(c.key)) online.set(c.key, { name: c.name, role: c.role, online: true, driver: driver?.key === c.key });
-  const offline = db.prepare("select token, name, role from tokens where kind = 'session'").all().filter((r) => !online.has(r.token)).map((r) => ({ name: r.name, role: r.role, online: false, driver: false }));
+  const offline = (HOSTED ? [] : db.prepare("select token, name, role from tokens where kind = 'session'").all()).filter((r) => !online.has(r.token)).map((r) => ({ name: r.name, role: r.role, online: false, driver: false }));
   return { type: 'people', people: [...online.values(), ...offline] };
 }
 const pushPeople = () => broadcast(peopleMsg());
 function usageMsg(c) {
   const rows = usageRows.all(0).filter((r) => isOp(c) || r.key === c.key).map(({ key, ...r }) => r);
-  const cap = c.role === 'owner' ? null : effectiveCap(getKv('cap:' + c.key), c.role === 'member' ? mode : 'guarded', DEFAULT_GUEST_CAP);
+  const cap = c.role === 'owner' ? null : effectiveCap(capSetting(c), c.role === 'member' ? mode : 'guarded', DEFAULT_GUEST_CAP);
   return { type: 'usage', rows, budget: effectiveBudget(), spent: spentUsd.get().n, me: { cap, usedToday: tokensToday.get(c.key, dayStart(Date.now())).n } };
 }
 const pushUsage = () => clients.forEach((c, ws) => send(ws, usageMsg(c)));
@@ -397,10 +407,12 @@ const removeMember = (key) => {
 
 const HELP = '/who /members /usage [today] /token /handoff [name] /save | ops: /invite /kick <name> /revoke <name> | owner: /op <name> /deop <name> /cap <name> <tokens|off|unlimited> /budget <dollars|off> /trust <guarded|trusted> /allow <Tool> /deny <Tool> /sandbox <read-only|write> (codex)';
 
+const MANAGED = ['invite', 'token', 'kick', 'revoke', 'op', 'deop', 'cap', 'members']; // everything that grants, changes or removes access
 function command(ws, c, line) {
   const [cmd, arg, arg2] = line.slice(1).split(/\s+/);
   const need = (ok) => ok || (tell(ws, `/${cmd}: you don't have permission`), false);
   const isDriver = driver?.key === c.key;
+  if (HOSTED && MANAGED.includes(cmd)) return tell(ws, `/${cmd} is managed from the dashboard in hosted sessions`);
   switch (cmd) {
     case 'help': return tell(ws, HELP);
     case 'who': return tell(ws, [...clients.values()].map((m) => `${m.name} (${m.role}${m.key === driver?.key ? ', driver' : ''})`).join(', ') + `; driver: ${driver?.name ?? 'open'}; mode: ${mode}`);
@@ -558,7 +570,23 @@ function memoryApi(req, res) {
 // HTTPS: set SANDWICH_CERT and SANDWICH_KEY (PEM file paths) to terminate TLS here, or put a TLS proxy/tunnel
 // in front (it sends x-forwarded-proto/host, which invite links follow). Without either, plain http is localhost-only.
 const tls = process.env.SANDWICH_CERT && process.env.SANDWICH_KEY;
-const handler = (req, res) => (req.url.split('?')[0] === '/memory' ? memoryApi(req, res) : serveStatic(req, res, SITE, { routes: { '/': 'session.html' }, prefixes: ['/assets/', '/data/'] }));
+// The control plane's one back channel: drop someone's open sockets right away when it revokes them. It authenticates with a
+// signed assertion from the control plane (sub "control-plane"), same as everything else here; the worker never decides access.
+function internalApi(req, res) {
+  const who = HOSTED && req.method === 'POST' && req.url === '/internal/drop' && whoIs((req.headers.authorization || '').replace(/^Bearer /, ''));
+  if (!who || who.sub !== 'control-plane' || who.role !== 'owner') { res.writeHead(404, { 'content-type': 'text/plain' }); return res.end('not found'); }
+  let body = '';
+  req.setEncoding('utf8');
+  req.on('data', (d) => { body += d; if (body.length > 1024) req.destroy(); });
+  req.on('end', () => {
+    let sub;
+    try { sub = JSON.parse(body).sub; } catch { /* handled below */ }
+    if (typeof sub !== 'string' || !sub) { res.writeHead(400); return res.end('sub required'); }
+    removeMember('u:' + sub);
+    res.writeHead(200); res.end('ok');
+  });
+}
+const handler = (req, res) => (req.url.startsWith('/internal/') ? internalApi(req, res) : req.url.split('?')[0] === '/memory' ? memoryApi(req, res) : serveStatic(req, res, SITE, { routes: { '/': 'session.html' }, prefixes: ['/assets/', '/data/'] }));
 const server = tls
   ? https.createServer({ cert: readFileSync(process.env.SANDWICH_CERT), key: readFileSync(process.env.SANDWICH_KEY) }, handler)
   : http.createServer(handler);
@@ -606,7 +634,7 @@ wss.on('connection', (ws, req) => {
 
 function admit(ws, req, t, nameParam) {
   let who = whoIs(t);
-  const row = who ? null : getToken.get(hash(t));
+  const row = who || HOSTED ? null : getToken.get(hash(t));
   if (row?.kind === 'invite') {
     delToken.run(hash(t)); // single-use, burned whether or not it had expired
     if (row.expires > Date.now()) {
@@ -622,11 +650,11 @@ function admit(ws, req, t, nameParam) {
   if (AGENT === 'codex' && !TRUST_MEMBERS && who.role !== 'owner') return ws.close(4403, 'codex mode is owner-only on this server');
   const { role } = who;
   let { name } = who;
-  const key = role === 'owner' ? 'owner' : hash(t);
+  const key = HOSTED ? 'u:' + who.sub : role === 'owner' ? 'owner' : hash(t);
   if (clients.size >= MAX_SOCKETS || socketsOf(key).length >= (role === 'owner' ? 6 : MAX_TABS)) return ws.close(4408, 'too many connections');
-  if (role !== 'owner') db.prepare('update tokens set expires = ? where token = ?').run(Date.now() + SESSION_TTL_MS, key); // sliding expiry
-  if (role === 'owner') { name = pick(clean(nameParam, 'owner'), sessionNames()); ownerNames.add(name); } // the owner chooses a name; members can't take it
-  const c = { name, role, token: t, key, origin: originFrom(req.headers, !!tls, TRUST_PROXY), dead: false };
+  if (role !== 'owner' && !HOSTED) db.prepare('update tokens set expires = ? where token = ?').run(Date.now() + SESSION_TTL_MS, key); // sliding expiry
+  if (role === 'owner' && !HOSTED) { name = pick(clean(nameParam, 'owner'), sessionNames()); ownerNames.add(name); } // the owner chooses a name; members can't take it
+  const c = { name, role, token: HOSTED ? '' : t, cap: who.cap, key, origin: originFrom(req.headers, !!tls, TRUST_PROXY), dead: false };
   clients.set(ws, c);
   send(ws, { type: 'role', role, name });
   send(ws, statusMsg());
@@ -669,7 +697,7 @@ function admit(ws, req, t, nameParam) {
       const budget = effectiveBudget();
       if (overBudget(spentUsd.get().n, budget)) return tell(ws, `the session budget ($${budget}) is used up, so new prompts are paused. The owner can raise it with /budget.`);
       // explicit caps apply to anyone but the owner; the Trusted-mode default applies to plain members only
-      const cap = c.role === 'owner' ? null : effectiveCap(getKv('cap:' + c.key), c.role === 'member' ? mode : 'guarded', DEFAULT_GUEST_CAP);
+      const cap = c.role === 'owner' ? null : effectiveCap(capSetting(c), c.role === 'member' ? mode : 'guarded', DEFAULT_GUEST_CAP);
       if (overCap(tokensToday.get(c.key, dayStart(Date.now())).n, cap)) return tell(ws, `you have reached your daily usage cap (${cap} tokens). Your message is visible but was not sent to the agent; the owner can raise it.`);
       if (busy && working) tell(ws, headsUp({ name: working.by.name, snippet: working.snippet, ageMs: Date.now() - working.since, tools: working.tools }));
       push(`${c.name}: ${m.text.replace(/\s*[\r\n]+\s*/g, ' / ')}`, { op: isOp(c), by: { key: c.key, name: c.name }, snippet: m.text }); // one line, so a message can't pose as another sender
