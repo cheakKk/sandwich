@@ -54,3 +54,7 @@ QM is a company-wide system: isolated workspaces per person and per Slack room, 
 ## Tests
 
 `npm test` runs unit tests and fake-agent integration suites (Claude mode, Codex mode with and without trusted members, an agent that ends, abuse cases) plus a real-browser check in headless Edge (skipped if Edge is missing). It needs port 3000 free. Runs against the real Claude or Codex agent are manual.
+
+## Website (design preview)
+
+`node site/serve.mjs` then open http://127.0.0.1:4000/ (landing, sign-in, dashboard, Terms, Privacy). Hand-built, no framework, no third-party requests. The live session page is served by the worker at `/`; `/?demo` replays a recorded real session. Sign-in, the beta form and the dashboard are design previews with sample data; Terms and Privacy are drafts. Direction and rules: `docs/design.md`. Tools: `tools/record-demo.mjs`, `tools/shoot.mjs`.

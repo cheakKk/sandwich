@@ -104,7 +104,7 @@ assert.equal((await post({ kind: 'note', text: 'forged?', author: 'owner' })).st
 assert.equal((await post({ kind: 'note', text: 'z'.repeat(5000) })).status, 400, 'long entry rejected');
 const mem = await (await fetch(`${BASE}/memory`, { headers: { authorization: 'Bearer ' + owner } })).text();
 assert(mem.includes('note (bobby): forged?') && !mem.includes('(owner): forged?'), 'author comes from the session, not the request');
-assert.equal((await fetch(`${BASE}/memoryfoo`, { headers: { authorization: 'Bearer ' + owner } })).headers.get('content-type'), 'text/html', '/memoryfoo is not the memory API');
+assert.equal((await fetch(`${BASE}/memoryfoo`, { headers: { authorization: 'Bearer ' + owner } })).status, 404, '/memoryfoo is not the memory API');
 
 // --- batch 3: host exhaustion, revoke, expiry, approval timeout, origin, headers ---
 // one member cannot open unlimited sockets

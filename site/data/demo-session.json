@@ -1,0 +1,534 @@
+{
+ "recordedWith": "real Claude agent, two people (fictional names Maya and Jon)",
+ "duration": 60554,
+ "events": [
+  {
+   "t": 13,
+   "msg": {
+    "type": "role",
+    "role": "owner",
+    "name": "Maya"
+   }
+  },
+  {
+   "t": 13,
+   "msg": {
+    "type": "status",
+    "busy": false,
+    "working": null
+   }
+  },
+  {
+   "t": 13,
+   "msg": {
+    "type": "mode",
+    "mode": "guarded"
+   }
+  },
+  {
+   "t": 14,
+   "msg": {
+    "ts": "2026-10-14T01:50:11.618Z",
+    "user": "system",
+    "text": "Guarded: anything the agent wants to do beyond reading needs an op to approve it."
+   }
+  },
+  {
+   "t": 14,
+   "msg": {
+    "ts": "2026-10-14T01:50:11.620Z",
+    "user": "system",
+    "text": "This session is new, nothing to review yet."
+   }
+  },
+  {
+   "t": 15,
+   "msg": {
+    "ts": "2026-10-14T01:50:11.620Z",
+    "user": "system",
+    "text": "Maya joined"
+   }
+  },
+  {
+   "t": 15,
+   "msg": {
+    "type": "people",
+    "people": [
+     {
+      "name": "Maya",
+      "role": "owner",
+      "online": true,
+      "driver": false
+     }
+    ]
+   }
+  },
+  {
+   "t": 15,
+   "msg": {
+    "type": "usage",
+    "rows": [],
+    "budget": null,
+    "spent": 0,
+    "me": {
+     "cap": null,
+     "usedToday": 0
+    }
+   }
+  },
+  {
+   "t": 16,
+   "msg": {
+    "type": "memory",
+    "summary": "",
+    "done": [],
+    "decisions": [],
+    "tasks": [],
+    "handoff": null,
+    "entries": 0
+   }
+  },
+  {
+   "t": 1517,
+   "msg": {
+    "type": "invite",
+    "url": "http://127.0.0.1:3000/#<token>",
+    "ttl": "24h"
+   }
+  },
+  {
+   "t": 2321,
+   "msg": {
+    "ts": "2026-10-14T01:50:13.927Z",
+    "user": "system",
+    "text": "Jon joined"
+   }
+  },
+  {
+   "t": 2321,
+   "msg": {
+    "type": "people",
+    "people": [
+     {
+      "name": "Maya",
+      "role": "owner",
+      "online": true,
+      "driver": false
+     },
+     {
+      "name": "Jon",
+      "role": "member",
+      "online": true,
+      "driver": false
+     }
+    ]
+   }
+  },
+  {
+   "t": 3823,
+   "msg": {
+    "ts": "2026-10-14T01:50:15.428Z",
+    "user": "Maya",
+    "text": "Read src/auth.js and tell me in two sentences what it does."
+   }
+  },
+  {
+   "t": 3823,
+   "msg": {
+    "type": "status",
+    "busy": true,
+    "working": {
+     "name": "Maya",
+     "snippet": "Read src/auth.js and tell me in two sentences what it does.",
+     "ageMs": 0,
+     "tools": 0
+    }
+   }
+  },
+  {
+   "t": 5635,
+   "msg": {
+    "ts": "2026-10-14T01:50:17.240Z",
+    "user": "agent",
+    "text": "[tool] Read {\"file_path\":\"~/notes-app/src/auth.js\"}"
+   }
+  },
+  {
+   "t": 5635,
+   "msg": {
+    "type": "status",
+    "busy": true,
+    "working": {
+     "name": "Maya",
+     "snippet": "Read src/auth.js and tell me in two sentences what it does.",
+     "ageMs": 1811,
+     "tools": 1
+    }
+   }
+  },
+  {
+   "t": 7332,
+   "msg": {
+    "type": "typing",
+    "name": "Jon"
+   }
+  },
+  {
+   "t": 8159,
+   "msg": {
+    "ts": "2026-10-14T01:50:19.764Z",
+    "user": "agent",
+    "text": "`src/auth.js` handles sign-in for notes-app: its `login(name, password)` function looks up the username in a built-in user list and returns `{ ok: true, user: name }` if the password matches, or `{ ok: false }` if it doesn't. The only account is `maya`, and her password is written in the code as plain text, so anyone who can read the source can see it."
+   }
+  },
+  {
+   "t": 8178,
+   "msg": {
+    "type": "usage",
+    "rows": [
+     {
+      "name": "Maya",
+      "turns": 1,
+      "tokensIn": 5547,
+      "tokensOut": 244,
+      "cacheRead": 36567,
+      "costUsd": 0.0566803
+     }
+    ],
+    "budget": null,
+    "spent": 0.0566803,
+    "me": {
+     "cap": null,
+     "usedToday": 5791
+    }
+   }
+  },
+  {
+   "t": 8178,
+   "msg": {
+    "type": "status",
+    "busy": false,
+    "working": null
+   }
+  },
+  {
+   "t": 8541,
+   "msg": {
+    "ts": "2026-10-14T01:50:20.146Z",
+    "user": "Jon",
+    "text": "After that, please add a short comment above login() that says what it returns."
+   }
+  },
+  {
+   "t": 8541,
+   "msg": {
+    "type": "status",
+    "busy": true,
+    "working": {
+     "name": "Jon",
+     "snippet": "After that, please add a short comment above login() that says what it returns.",
+     "ageMs": 0,
+     "tools": 0
+    }
+   }
+  },
+  {
+   "t": 10603,
+   "msg": {
+    "ts": "2026-10-14T01:50:22.208Z",
+    "user": "agent",
+    "text": "[tool] Edit {\"replace_all\":false,\"file_path\":\"~/notes-app/src/auth.js\",\"old_string\":\""
+   }
+  },
+  {
+   "t": 10603,
+   "msg": {
+    "type": "status",
+    "busy": true,
+    "working": {
+     "name": "Jon",
+     "snippet": "After that, please add a short comment above login() that says what it returns.",
+     "ageMs": 2062,
+     "tools": 1
+    }
+   }
+  },
+  {
+   "t": 10623,
+   "msg": {
+    "type": "approval",
+    "id": "82050f46",
+    "tool": "Edit",
+    "input": {
+     "file_path": "~/notes-app/src/auth.js",
+     "old_string": "function login(name, password) {",
+     "new_string": "// Returns { ok: true, user: name } if the password matches, otherwise { ok: false }.\nfunction login(name, password) {",
+     "replace_all": false
+    }
+   }
+  },
+  {
+   "t": 10623,
+   "msg": {
+    "ts": "2026-10-14T01:50:22.229Z",
+    "user": "system",
+    "text": "waiting for an op to approve Edit"
+   }
+  },
+  {
+   "t": 12838,
+   "msg": {
+    "type": "resolved",
+    "id": "82050f46",
+    "allow": true
+   }
+  },
+  {
+   "t": 14179,
+   "msg": {
+    "ts": "2026-10-14T01:50:25.784Z",
+    "user": "agent",
+    "text": "I added this comment above `login()` in `src/auth.js`:\n\n```js\n// Returns { ok: true, user: name } if the password matches, otherwise { ok: false }.\n```\n\nI didn't change any other code. Maya's password is still written in the file as plain text."
+   }
+  },
+  {
+   "t": 14201,
+   "msg": {
+    "type": "usage",
+    "rows": [
+     {
+      "name": "Maya",
+      "turns": 1,
+      "tokensIn": 5547,
+      "tokensOut": 244,
+      "cacheRead": 36567,
+      "costUsd": 0.0566803
+     },
+     {
+      "name": "Jon",
+      "turns": 1,
+      "tokensIn": 486,
+      "tokensOut": 264,
+      "cacheRead": 42546,
+      "costUsd": 0.017661200000000002
+     }
+    ],
+    "budget": null,
+    "spent": 0.0743415,
+    "me": {
+     "cap": null,
+     "usedToday": 5791
+    }
+   }
+  },
+  {
+   "t": 14202,
+   "msg": {
+    "type": "status",
+    "busy": false,
+    "working": null
+   }
+  },
+  {
+   "t": 53583,
+   "msg": {
+    "ts": "2026-10-14T01:51:05.188Z",
+    "user": "system",
+    "text": "Jon added a done to PROJECT_MEMORY.md"
+   }
+  },
+  {
+   "t": 53584,
+   "msg": {
+    "type": "memory",
+    "summary": "",
+    "done": [
+     {
+      "ts": "2026-10-14T01:51:05.188Z",
+      "author": "Jon",
+      "text": "Added a comment above login() describing what it returns"
+     }
+    ],
+    "decisions": [],
+    "tasks": [],
+    "handoff": null,
+    "entries": 1
+   }
+  },
+  {
+   "t": 54220,
+   "msg": {
+    "ts": "2026-10-14T01:51:05.825Z",
+    "user": "system",
+    "text": "Maya added a decision to PROJECT_MEMORY.md"
+   }
+  },
+  {
+   "t": 54221,
+   "msg": {
+    "type": "memory",
+    "summary": "",
+    "done": [
+     {
+      "ts": "2026-10-14T01:51:05.188Z",
+      "author": "Jon",
+      "text": "Added a comment above login() describing what it returns"
+     }
+    ],
+    "decisions": [
+     {
+      "ts": "2026-10-14T01:51:05.825Z",
+      "author": "Maya",
+      "text": "Keep sign-in errors generic: never say whether the name or the password was wrong"
+     }
+    ],
+    "tasks": [],
+    "handoff": null,
+    "entries": 2
+   }
+  },
+  {
+   "t": 54845,
+   "msg": {
+    "ts": "2026-10-14T01:51:06.451Z",
+    "user": "system",
+    "text": "Jon added a task to PROJECT_MEMORY.md"
+   }
+  },
+  {
+   "t": 54847,
+   "msg": {
+    "type": "memory",
+    "summary": "",
+    "done": [
+     {
+      "ts": "2026-10-14T01:51:05.188Z",
+      "author": "Jon",
+      "text": "Added a comment above login() describing what it returns"
+     }
+    ],
+    "decisions": [
+     {
+      "ts": "2026-10-14T01:51:05.825Z",
+      "author": "Maya",
+      "text": "Keep sign-in errors generic: never say whether the name or the password was wrong"
+     }
+    ],
+    "tasks": [
+     {
+      "ts": "2026-10-14T01:51:06.450Z",
+      "author": "Jon",
+      "text": "Add a rate limit to login()"
+     }
+    ],
+    "handoff": null,
+    "entries": 3
+   }
+  },
+  {
+   "t": 56064,
+   "msg": {
+    "ts": "2026-10-14T01:51:07.669Z",
+    "user": "system",
+    "text": "Maya asked the agent to summarize for PROJECT_MEMORY.md"
+   }
+  },
+  {
+   "t": 56065,
+   "msg": {
+    "type": "status",
+    "busy": true,
+    "working": {
+     "name": "Maya",
+     "snippet": "writing the project summary",
+     "ageMs": 0,
+     "tools": 0
+    }
+   }
+  },
+  {
+   "t": 60532,
+   "msg": {
+    "ts": "2026-10-14T01:51:12.139Z",
+    "user": "agent",
+    "text": "SUMMARY:\n**Goal:** Build the sign-in for notes-app (`src/auth.js`).\n\n**Current state:** `login(name, password)` checks the name and password against a built-in user list. It returns `{ ok: true, user: name }` on a match and `{ ok: false }` otherwise. Jon added a comment above `login()` describing what it returns. The owner decided that sign-in errors must stay generic and never say whether the name or the password was wrong; the current code follows this. The only account is `maya`, and her password is stored in the source as plain text.\n\n**Open tasks:**\n- Add a rate limit to `login()` (Jon).\n- Not yet logged as a task: move the plain-text password out of the source and store hashed passwords instead.\n\n**Next step:** Jon adds the rate limit while keeping errors generic, so a blocked attempt doesn't reveal which part was wrong."
+   }
+  },
+  {
+   "t": 60538,
+   "msg": {
+    "ts": "2026-10-14T01:51:12.144Z",
+    "user": "system",
+    "text": "PROJECT_MEMORY.md saved"
+   }
+  },
+  {
+   "t": 60539,
+   "msg": {
+    "type": "memory",
+    "summary": "**Goal:** Build the sign-in for notes-app (`src/auth.js`).\n\n**Current state:** `login(name, password)` checks the name and password against a built-in user list. It returns `{ ok: true, user: name }` on a match and `{ ok: false }` otherwise. Jon added a comment above `login()` describing what it returns. The owner decided that sign-in errors must stay generic and never say whether the name or the password was wrong; the current code follows this. The only account is `maya`, and her password is stored in the source as plain text.\n\n**Open tasks:**\n- Add a rate limit to `login()` (Jon).\n- Not yet logged as a task: move the plain-text password out of the source and store hashed passwords instead.\n\n**Next step:** Jon adds the rate limit while keeping errors generic, so a blocked attempt doesn't",
+    "done": [
+     {
+      "ts": "2026-10-14T01:51:05.188Z",
+      "author": "Jon",
+      "text": "Added a comment above login() describing what it returns"
+     }
+    ],
+    "decisions": [
+     {
+      "ts": "2026-10-14T01:51:05.825Z",
+      "author": "Maya",
+      "text": "Keep sign-in errors generic: never say whether the name or the password was wrong"
+     }
+    ],
+    "tasks": [
+     {
+      "ts": "2026-10-14T01:51:06.450Z",
+      "author": "Jon",
+      "text": "Add a rate limit to login()"
+     }
+    ],
+    "handoff": null,
+    "entries": 3
+   }
+  },
+  {
+   "t": 60554,
+   "msg": {
+    "type": "usage",
+    "rows": [
+     {
+      "name": "Maya",
+      "turns": 2,
+      "tokensIn": 5891,
+      "tokensOut": 626,
+      "cacheRead": 58218,
+      "costUsd": 0.0713945
+     },
+     {
+      "name": "Jon",
+      "turns": 1,
+      "tokensIn": 486,
+      "tokensOut": 264,
+      "cacheRead": 42546,
+      "costUsd": 0.017661200000000002
+     }
+    ],
+    "budget": null,
+    "spent": 0.0890557,
+    "me": {
+     "cap": null,
+     "usedToday": 6517
+    }
+   }
+  },
+  {
+   "t": 60554,
+   "msg": {
+    "type": "status",
+    "busy": false,
+    "working": null
+   }
+  }
+ ]
+}

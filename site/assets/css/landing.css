@@ -1,0 +1,93 @@
+/* Landing page. Same tokens as the app; flat colour, hairlines, small radius, no shadows or gradients. */
+.site-head { position: sticky; top: 0; z-index: 20; background: var(--paper); border-bottom: 1px solid var(--line-strong); }
+.site-head .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 64px; }
+.site-nav { display: flex; align-items: center; gap: 4px; }
+.site-nav a:not(.btn) { padding: 8px 12px; text-decoration: none; font-weight: 500; border-radius: var(--r-1); }
+.site-nav a:not(.btn):hover { background: var(--paper-2); }
+
+.section { padding-block: clamp(56px, 9vw, 120px); }
+.section--tight { padding-block: clamp(40px, 6vw, 72px); }
+.section--dark { background: var(--green); color: var(--on-green); }
+.section--dark .muted, .section--dark .lede, .section--dark .label { color: #B9C7BF; }
+.section--dark .rule { border-color: #2B5A4E; }
+.eyebrow { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 20px; }
+.eyebrow::before { content: ""; width: 8px; height: 8px; background: var(--accent); }
+
+/* hero */
+.hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: clamp(32px, 5vw, 64px); align-items: center; padding-block: clamp(40px, 7vw, 88px) clamp(48px, 7vw, 88px); }
+.hero .lede { margin-top: 24px; }
+.hero .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
+.hero-frame { position: relative; border: 1px solid var(--ink); background: var(--raised); }
+.hero-frame .bar-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--ink); background: var(--paper); }
+.hero-frame .stage { height: clamp(420px, 56vw, 560px); }
+.hero-frame .cap { padding: 10px 14px; border-top: 1px solid var(--line-strong); font-size: 0.85rem; background: var(--paper); }
+.hero-frame::before, .hero-frame::after, .hero-frame > .cf-a, .hero-frame > .cf-b { content: ""; position: absolute; width: 18px; height: 18px; border: 0 solid var(--accent); pointer-events: none; }
+.hero-frame::before { top: -7px; left: -7px; border-top-width: 3px; border-left-width: 3px; }
+.hero-frame::after { bottom: -7px; right: -7px; border-bottom-width: 3px; border-right-width: 3px; }
+.hero-frame > .cf-a { top: -7px; right: -7px; border-top-width: 3px; border-right-width: 3px; }
+.hero-frame > .cf-b { bottom: -7px; left: -7px; border-bottom-width: 3px; border-left-width: 3px; }
+
+/* how it works: the list scrolls, the picture stays */
+.steps { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: clamp(32px, 6vw, 80px); margin-top: 48px; }
+.step { min-height: 34vh; padding-block: 18px; border-top: 1px solid var(--line-strong); opacity: 0.45; transition: opacity 0.25s; }
+.step[aria-current="step"] { opacity: 1; }
+.step .num { font: 500 0.78rem/1 var(--mono); color: var(--accent); letter-spacing: 0.1em; }
+.step h3 { margin: 10px 0 8px; }
+.stage-sticky { position: sticky; top: 110px; align-self: start; height: 420px; }
+.panel-step { position: absolute; inset: 0; display: none; padding: 28px; align-content: center; gap: 16px; }
+.panel-step.on { display: grid; }
+.panel-step .field { max-width: 380px; }
+.panel-step .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+/* feature rows */
+.feature { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: clamp(32px, 6vw, 80px); align-items: center; padding-block: clamp(32px, 5vw, 64px); border-top: 1px solid var(--line-strong); }
+.feature--flip .feature-text { order: 2; }
+.feature h2 { margin-bottom: 16px; }
+.feature .lede { max-width: 30em; }
+.vis { padding: 22px; display: grid; gap: 14px; }
+.vis .head-row { display: flex; align-items: center; gap: 8px; }
+
+/* two settings, side by side */
+.settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(24px, 5vw, 64px); margin-top: 48px; }
+.settings > div { border-top: 1px solid #2B5A4E; padding-top: 20px; display: grid; gap: 12px; align-content: start; }
+.settings .h3 { display: flex; align-items: center; gap: 10px; }
+.settings .ico { stroke: var(--on-green); width: 26px; height: 26px; }
+.section--dark .seg { border-color: var(--on-green); background: transparent; }
+.section--dark .seg label { color: var(--on-green); }
+.section--dark .seg input:checked + label { background: var(--on-green); color: var(--green); }
+
+/* security: two columns separated by hairlines */
+.assure { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(24px, 5vw, 64px); margin-top: 40px; }
+.assure h3 { margin-bottom: 8px; }
+.assure li { display: grid; grid-template-columns: auto 1fr; gap: 12px; padding-block: 14px; border-top: 1px solid var(--line-strong); }
+.assure li:last-child { border-bottom: 1px solid var(--line-strong); }
+.assure .ico { margin-top: 3px; }
+.fine-print { margin-top: 28px; max-width: 46em; }
+
+.beta { max-width: 640px; margin-inline: auto; text-align: center; display: grid; gap: 20px; justify-items: center; }
+.beta form { width: 100%; display: grid; gap: 12px; text-align: left; }
+.site-foot { border-top: 1px solid var(--ink); padding-block: 32px 40px; }
+.site-foot .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 24px; }
+.site-foot nav { display: flex; gap: 20px; flex-wrap: wrap; }
+.site-foot a { text-decoration: none; font-weight: 500; }
+.site-foot a:hover { text-decoration: underline; }
+
+@media (max-width: 900px) {
+  .hero, .feature, .steps, .settings, .assure { grid-template-columns: minmax(0, 1fr); }
+  .feature--flip .feature-text { order: 0; }
+  .stage-sticky { position: relative; top: 0; height: 380px; }
+  .step { min-height: 0; opacity: 1; }
+  .site-nav a:not(.btn) { display: none; }
+}
+.foot-note { margin-top: 8px; }
+
+/* pictures beside the features: never wider than their column */
+.vis { grid-template-columns: minmax(0, 1fr); min-width: 0; }
+.vis > * { min-width: 0; }
+.vis .ticket { overflow-wrap: anywhere; }
+.vis .sx-now { flex-wrap: wrap; }
+.head-row { display: flex; align-items: center; gap: 8px; }
+.sx--compact .sx-jump { display: none; }
+.panel-step .seg { max-width: 320px; }
+.panel-step .seg > span { display: grid; }
+.panel-step .seg label { cursor: default; }

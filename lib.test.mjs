@@ -324,3 +324,13 @@ test('memorySnapshot: a very long summary is cut, and headings are not part of i
   const s = memorySnapshot('# Summary\n' + 'x'.repeat(2000) + '\n\n## Log\n');
   assert.ok(s.summary.length <= 801 && !s.summary.includes('#'));
 });
+
+// --- the summary parser must not eat the markdown that starts the summary itself ---
+test('parseSummary: bold at the start of the summary text survives', () => {
+  assert.equal(parseSummary('SUMMARY:\n\n**Goal:** ship login'), '**Goal:** ship login');
+  assert.equal(parseSummary('SUMMARY:  **Goal:** ship login'), '**Goal:** ship login');
+});
+
+test('parseSummary: all the ways a model decorates the label still work', () => {
+  for (const t of ['SUMMARY: x', '**SUMMARY:** x', '**SUMMARY**: x', '__SUMMARY:__ x', '  # SUMMARY: x', '> SUMMARY: x', 'summary: x']) assert.equal(parseSummary(t), 'x', t);
+});

@@ -23,6 +23,11 @@ assert(names(bob).includes('ann:owner:on'), 'guest sees the owner');
 bob.close(); await wait();
 assert(names(o).includes(`${bobName}:member:off`), 'a member who left shows as offline: ' + names(o));
 
+// the invite link arrives as data, so the page never has to pick it out of chat text
+say(o, '/invite'); await wait();
+const inv = last(o, 'invite');
+assert(inv && /^http:\/\/127\.0\.0\.1:3000\/#\w{32}$/.test(inv.url) && inv.ttl, 'structured invite: ' + JSON.stringify(inv));
+
 // roles and the driver are part of the same message
 const bobB = await open(await invite(o), 'bobby'); await wait();
 const bn = bobB.got.find((m) => m.type === 'role').name;

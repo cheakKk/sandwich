@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sandwich | Work with an AI agent, together</title>
+<meta name="description" content="A shared session where your team and the people you invite watch an AI agent work, steer it, and hand it off. Clients join from a link, with no account.">
+<link rel="stylesheet" href="/assets/css/tokens.css">
+<link rel="stylesheet" href="/assets/css/base.css">
+<link rel="stylesheet" href="/assets/css/components.css">
+<link rel="stylesheet" href="/assets/css/app.css">
+<link rel="stylesheet" href="/assets/css/landing.css">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<script src="/assets/js/boot.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+
+<header class="site-head">
+  <div class="wrap">
+    <a class="brand" href="/"><svg class="ico" aria-hidden="true"><use href="/assets/icons.svg#i-session"/></svg>sandwich</a>
+    <nav class="site-nav" aria-label="Main">
+      <a href="#how">How it works</a>
+      <a href="#trust">Trust settings</a>
+      <a href="#security">Security</a>
+      <a class="btn btn--outline btn--sm" href="/signin">Sign in</a>
+      <a class="btn btn--sm" href="#beta">Request an invite</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <section class="wrap hero">
+    <div>
+      <p class="eyebrow label">Private beta, by invitation</p>
+      <h1 class="display">Work with an AI agent, <span class="accent-word">together.</span></h1>
+      <p class="lede">Sandwich is a shared session where your team and the people you invite watch the agent work, steer it, and hand it off. Clients join from a link. No account, no install.</p>
+      <div class="actions">
+        <a class="btn" href="#beta">Request an invite</a>
+        <a class="btn btn--outline" href="#demo">Watch a real session</a>
+      </div>
+    </div>
+    <figure class="hero-frame" id="demo">
+      <i class="cf-a"></i><i class="cf-b"></i>
+      <div class="bar-top"><span class="label">A real session, recorded</span><span class="pill pill--live">Replay</span></div>
+      <div class="stage" id="hero-session" aria-label="A recorded session between a host and a client"><div class="skel skel--block"></div></div>
+      <figcaption class="cap muted">Recorded with the real agent. Maya hosts the session and Jon is her client. Names are made up; everything else is what happened.</figcaption>
+    </figure>
+  </section>
+
+  <div class="marquee" aria-hidden="true">
+    <div class="marquee__track" id="ruler">
+      <span>No account for guests</span><span>Anything risky needs an op</span><span>Invite links work once</span><span>Every turn has an owner</span><span>Usage per person</span><span>Your key, your bill</span>
+    </div>
+  </div>
+
+  <section class="section wrap" id="how">
+    <p class="label eyebrow">How it works</p>
+    <h2 class="h2">From sign-in to a live session <span class="accent-word">in four steps.</span></h2>
+    <div class="steps">
+      <ol class="step-list">
+        <li class="step rv" data-step="1"><span class="num">01</span><h3 class="h3">Sign in</h3><p class="muted">Hosts sign in with Google or GitHub. Guests never need an account.</p></li>
+        <li class="step rv" data-step="2"><span class="num">02</span><h3 class="h3">Add your key</h3><p class="muted">Use your own Anthropic or OpenAI key. It is held only while the session runs, and the agent never sees it.</p></li>
+        <li class="step rv" data-step="3"><span class="num">03</span><h3 class="h3">Launch</h3><p class="muted">Start with an empty workspace or a public GitHub repository. Pick Claude or Codex.</p></li>
+        <li class="step rv" data-step="4"><span class="num">04</span><h3 class="h3">Invite</h3><p class="muted">Send a single-use link. A guest opens it, types a name, and is in.</p></li>
+      </ol>
+      <div class="stage-sticky">
+        <div class="panel panel-step cf on" inert data-step="1"><i class="cf-a"></i><i class="cf-b"></i>
+          <p class="label">Step 1</p><h3 class="h3">Welcome back</h3>
+          <div class="row"><button class="btn btn--ink" type="button" tabindex="-1">Continue with Google</button><button class="btn btn--outline" type="button" tabindex="-1">Continue with GitHub</button></div>
+          <p class="muted sx-fine">Hosts only. There is no password to forget, because there is no password.</p></div>
+        <div class="panel panel-step cf" inert data-step="2"><i class="cf-a"></i><i class="cf-b"></i>
+          <p class="label">Step 2</p><h3 class="h3">Your model key</h3>
+          <label class="field"><span>Anthropic API key</span><input class="input mono" value="sk-ant-••••••••••••••••" readonly tabindex="-1"></label>
+          <p class="muted sx-fine">Held for this session only. It never enters the sandbox where the agent runs.</p></div>
+        <div class="panel panel-step cf" inert data-step="3"><i class="cf-a"></i><i class="cf-b"></i>
+          <p class="label">Step 3</p><h3 class="h3">Start a session</h3>
+          <div class="seg" role="presentation"><span><input type="radio" tabindex="-1" checked><label>Claude</label></span><span><input type="radio" tabindex="-1"><label>Codex</label></span></div>
+          <div class="row"><span class="pill">Empty workspace</span><span class="pill">Public GitHub repo</span></div>
+          <div class="row"><button class="btn" type="button" tabindex="-1">Launch session</button></div></div>
+        <div class="panel panel-step cf" inert data-step="4"><i class="cf-a"></i><i class="cf-b"></i>
+          <p class="label">Step 4</p><h3 class="h3">Invite someone</h3>
+          <label class="field"><span>Single-use link, 24h</span><input class="input mono" value="https://sandwich.example/#4f9c…" readonly tabindex="-1"></label>
+          <div class="row"><button class="btn btn--outline btn--sm" type="button" tabindex="-1"><svg class="ico" aria-hidden="true"><use href="/assets/icons.svg#i-link"/></svg>Copy link</button><span class="pill pill--ok">Guest needs no account</span></div></div>
+      </div>
+    </div>
+    <p class="muted sx-fine fine-print">Hosting is in private beta. Steps 1 to 3 are being built; the live session you saw above already works.</p>
+  </section>
+
+  <section class="wrap" aria-label="What it does">
+    <article class="feature rv">
+      <div class="feature-text">
+        <p class="label eyebrow">Live, together</p>
+        <h2 class="h2">One agent, <span class="accent-word">many hands.</span></h2>
+        <p class="lede">Everyone sees what the agent is doing and whose order it is on. If you prompt while it is busy, you are told what you are queued behind, and your message waits its turn.</p>
+      </div>
+      <div class="panel vis" id="vis-orders"></div>
+    </article>
+    <article class="feature feature--flip rv">
+      <div class="feature-text">
+        <p class="label eyebrow">Memory</p>
+        <h2 class="h2">Memory that follows <span class="accent-word">the project.</span></h2>
+        <p class="lede">Decisions, finished work and open tasks are saved with the project, so the next session, or the next person, picks up where this one stopped. Saving a summary never throws away what was already recorded.</p>
+      </div>
+      <div class="panel vis" id="vis-memory"></div>
+    </article>
+    <article class="feature rv">
+      <div class="feature-text">
+        <p class="label eyebrow">Cost</p>
+        <h2 class="h2">Costs you can <span class="accent-word">see.</span></h2>
+        <p class="lede">Every turn is credited to whoever started it. Set a daily token cap for any guest and a budget for the whole session, so a busy afternoon never turns into a surprise.</p>
+      </div>
+      <div class="panel vis" id="vis-usage"></div>
+    </article>
+  </section>
+
+  <section class="section section--dark" id="trust">
+    <div class="wrap">
+      <p class="label eyebrow">Two settings</p>
+      <h2 class="h2">You decide how much the agent can do <span class="accent-word">without asking.</span></h2>
+      <div class="settings">
+        <div>
+          <h3 class="h3"><svg class="ico" aria-hidden="true"><use href="/assets/icons.svg#i-guarded"/></svg>Guarded</h3>
+          <p class="lede">The default. Anything the agent wants to do beyond reading waits for an op to approve it, and you see the full command first.</p>
+        </div>
+        <div>
+          <h3 class="h3"><svg class="ico" aria-hidden="true"><use href="/assets/icons.svg#i-trusted"/></svg>Trusted</h3>
+          <p class="lede">For teams you trust. Tools run without asking, inside an isolated sandbox, with a daily token cap for guests and a budget for the session. Only the owner can switch it, and everyone is told.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section wrap" id="security">
+    <p class="label eyebrow">Security</p>
+    <h2 class="h2">What we protect, and <span class="accent-word">what we do not.</span></h2>
+    <div class="assure">
+      <div>
+        <h3 class="h3">Built and tested today</h3>
+        <ul>
+          <li><svg class="ico" aria-hidden="true"><use href="/assets/icons.svg#i-shield"/></svg><span>Anything beyond reading needs an op to approve it, and the approval shows the full command.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="/assets/icons.svg#i-shield"/></svg><span>Reading is limited to visible files inside the project folder.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="/assets/icons.svg#i-shield"/></svg><span>Invite links work once and expire. Tokens never travel in a web address.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="/assets/icons.svg#i-shield"/></svg><span>The agent runs with a clean environment: no owner token and no stray secrets.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="/assets/icons.svg#i-shield"/></svg><span>Every turn, tool call and cost is recorded against a person.</span></li>
+        </ul>
+      </div>
+      <div>
+        <h3 class="h3">Before the beta opens</h3>
+        <ul>
+          <li><svg class="ico" aria-hidden="true"><use href="/assets/icons.svg#i-busy"/></svg><span>Each session in its own isolated sandbox, proven by tests that try to escape it.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="/assets/icons.svg#i-busy"/></svg><span>Your API key held by a proxy and never inside the sandbox.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="/assets/icons.svg#i-busy"/></svg><span>A security review by someone who did not build it.</span></li>
+          <li><svg class="ico" aria-hidden="true"><use href="/assets/icons.svg#i-busy"/></svg><span>Written confirmation of the AI providers' terms for a hosted product.</span></li>
+        </ul>
+      </div>
+    </div>
+    <p class="muted fine-print">No tool can promise that an AI agent will never be talked into a mistake. That is why a person approves what matters, and why we say plainly what is and is not protected. The full list is in our <a href="https://github.com/cheakKk/sandwich/blob/main/SECURITY.md">security notes</a>.</p>
+  </section>
+
+  <section class="section section--tight wrap" id="beta">
+    <div class="beta panel cf"><i class="cf-a"></i><i class="cf-b"></i>
+      <p class="label">Private beta</p>
+      <h2 class="h2">Opening to a few teams <span class="accent-word">first.</span></h2>
+      <p class="lede">Sandwich is invite only while we harden it. Leave an email and tell us what you would use it for.</p>
+      <form action="#" aria-describedby="beta-note">
+        <label class="field"><span>Email</span><input class="input" type="email" disabled placeholder="you@company.com"></label>
+        <label class="field"><span>What would you use it for?</span><textarea class="input" disabled></textarea></label>
+        <button class="btn" type="button" disabled>Request an invite</button>
+        <p id="beta-note" class="muted sx-fine">This form goes live when the beta opens. This page is a design preview.</p>
+      </form>
+    </div>
+  </section>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div><a class="brand" href="/"><svg class="ico" aria-hidden="true"><use href="/assets/icons.svg#i-session"/></svg>sandwich</a><p class="muted sx-fine foot-note">Shared sessions with an AI agent.</p></div>
+    <nav aria-label="Legal"><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/signin">Sign in</a></nav>
+  </div>
+</footer>
+<script type="module" src="/assets/js/landing.js"></script>
+</body>
+</html>

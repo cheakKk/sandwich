@@ -9,9 +9,11 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
 import { fakeCodex, runCodex } from './codex.mjs';
+import { serveStatic } from './static.mjs';
 import { claudeTurn, codexTurn, creditTurn, dayStart, effectiveCap, formatUsage, headsUp, overBudget, overCap, toolLimiter } from './usage.mjs';
 import { agentEnv, compactMemory, dbPath, memorySnapshot, originFrom, parseSummary, promptMemory, publicError, readScope, recap, spawnAs, takeBatch, ttlText } from './lib.mjs';
 
@@ -425,6 +427,7 @@ function command(ws, c, line) {
       if (AGENT === 'codex' && !TRUST_MEMBERS) return tell(ws, 'codex mode is owner-only: a member could make Codex read any file your account can read, including its own login. Restart with CODEX_TRUST_MEMBERS=1 if you accept that.');
       const t = token();
       putToken(t, 'invite', 'member', null, Date.now() + INVITE_TTL_MS);
+      send(ws, { type: 'invite', url: `${c.origin}/#${t}`, ttl: ttlText(INVITE_TTL_MS) }); // for the web UI; the chat line below is for slash-command users
       return tell(ws, `invite link (single-use, ${ttlText(INVITE_TTL_MS)}): ${c.origin}/#${t}`);
     }
     case 'token': return tell(ws, `your token for the CLI/MCP (SANDWICH_TOKEN): ${c.token}`);
@@ -518,7 +521,7 @@ function command(ws, c, line) {
   }
 }
 
-const page = readFileSync(new URL('./public/index.html', import.meta.url));
+const SITE = fileURLToPath(new URL('./site/', import.meta.url)); // the web UI; the worker serves only the session page, its assets and the demo recording
 // Memory API for the CLI and MCP server: GET /memory, POST /memory {kind,text}. Bearer = a session or owner token.
 const KINDS = ['note', 'decision', 'task', 'done', 'handoff'];
 function memoryApi(req, res) {
@@ -555,15 +558,7 @@ function memoryApi(req, res) {
 // HTTPS: set SANDWICH_CERT and SANDWICH_KEY (PEM file paths) to terminate TLS here, or put a TLS proxy/tunnel
 // in front (it sends x-forwarded-proto/host, which invite links follow). Without either, plain http is localhost-only.
 const tls = process.env.SANDWICH_CERT && process.env.SANDWICH_KEY;
-// The page may not be framed by other sites, and may only load its own inline script and talk to its own server.
-const PAGE_HEADERS = {
-  'content-type': 'text/html',
-  'x-frame-options': 'DENY',
-  'x-content-type-options': 'nosniff',
-  'referrer-policy': 'no-referrer', // an invite or session token in the address bar must never travel in a Referer header
-  'content-security-policy': "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
-};
-const handler = (req, res) => (req.url.split('?')[0] === '/memory' ? memoryApi(req, res) : res.writeHead(200, PAGE_HEADERS).end(page));
+const handler = (req, res) => (req.url.split('?')[0] === '/memory' ? memoryApi(req, res) : serveStatic(req, res, SITE, { routes: { '/': 'session.html' }, prefixes: ['/assets/', '/data/'] }));
 const server = tls
   ? https.createServer({ cert: readFileSync(process.env.SANDWICH_CERT), key: readFileSync(process.env.SANDWICH_KEY) }, handler)
   : http.createServer(handler);

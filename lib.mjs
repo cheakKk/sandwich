@@ -70,8 +70,9 @@ export function compactMemory(memory, summary, maxEntries = 100, archive = []) {
 
 // The agent was told to start its reply with "SUMMARY:". Markdown around it is fine; anything else, or empty, is rejected.
 export function parseSummary(text) {
-  const m = text.match(/^[\s*_#>]*SUMMARY[*_\s]*:[*_\s]*([\s\S]*)$/i);
-  return m?.[1].trim() || null;
+  // an opening ** or __ before the label may close right after it (before or after the colon); anything after the colon is the summary
+  const m = text.match(/^\s*(?:#{1,6}\s+|>\s+)?(\*\*|__)?\s*SUMMARY\s*(?:\1)?\s*:\s*(?:\1)?\s*([\s\S]*)$/i);
+  return m?.[2].trim() || null;
 }
 
 // Where the server is reached from. Behind a proxy the forwarded values win, but only well-formed ones.
