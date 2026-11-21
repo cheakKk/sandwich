@@ -7,3 +7,5 @@ PROJECT_MEMORY.md.tmp
 *.tmp.mjs
 fix.tmp.mjs
 *.tmp
+secrets.env
+*.env

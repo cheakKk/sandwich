@@ -1,0 +1,7 @@
+{
+  "name": "sandwich",
+  "owner": { "name": "cheakKk" },
+  "plugins": [
+    { "name": "sandwich", "source": "./", "description": "Share a live Claude session from your project folder with one link." }
+  ]
+}

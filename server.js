@@ -16,10 +16,13 @@ import { fakeCodex, runCodex } from './codex.mjs';
 import { serveStatic } from './static.mjs';
 import { claudeTurn, codexTurn, creditTurn, dayStart, effectiveCap, formatUsage, headsUp, overBudget, overCap, toolLimiter } from './usage.mjs';
 import { verify } from './assert.mjs';
+import { limits as teamLimits, teamStore } from './team.mjs';
+import { createTeamApi, readJson } from './team-api.mjs';
 import { agentEnv, compactMemory, dbPath, memorySnapshot, originFrom, parseSummary, promptMemory, publicError, readScope, recap, spawnAs, takeBatch, ttlText } from './lib.mjs';
 
 const PORT = Number(process.env.PORT) || 3000;
-const AGENT = process.env.AGENT === 'codex' ? 'codex' : 'claude'; // whose login/plan powers the session
+// whose login/plan powers the session; 'none' = no shared agent, only the chat and the team hub for people's own Claude Codes
+const AGENT = ['codex', 'none'].includes(process.env.AGENT) ? process.env.AGENT : 'claude';
 const MEMORY = 'PROJECT_MEMORY.md';
 const MAX_TEXT = 4000; // one chat message
 const MAX_ENTRY = 2000; // one memory entry
@@ -62,6 +65,7 @@ const tokensToday = db.prepare('select coalesce(sum(tokens_in + tokens_out), 0) 
 const usageRows = db.prepare(`select key, (select name from usage u2 where u2.key = usage.key order by id desc limit 1) as name, count(*) as turns,
   sum(tokens_in) as tokensIn, sum(tokens_out) as tokensOut, sum(cache_read) as cacheRead, sum(cost_usd) as costUsd
   from usage where ts >= ? group by key order by sum(tokens_in + tokens_out) desc`);
+const team = teamStore(db);
 const getKv = (k) => db.prepare('select v from kv where k = ?').get(k)?.v;
 // Joining reads a bounded slice and two small aggregates; the table itself is capped at about EVENT_KEEP rows by pruning.
 db.exec('create index if not exists events_user on events(user, id)');
@@ -113,6 +117,9 @@ const pick = (base, taken) => {
 };
 const clean = (n, fallback) => String(n || '').replace(/\W/g, '').slice(0, 20) || fallback;
 const isOp = (c) => c.role === 'owner' || c.role === 'op';
+// The host's name in the team (from git config via start.mjs). Their own Claude Code is always a teammate.
+const OWNER_TEAM_NAME = clean(process.env.SANDWICH_OWNER_NAME, 'owner');
+if (!HOSTED) team.addAgent({ key: 'owner', name: OWNER_TEAM_NAME });
 
 const clients = new Map(); // ws -> {name, role, token, key, origin, dead}
 // A client that doesn't read its socket would make the server buffer every broadcast for it: cut it off instead.
@@ -316,6 +323,7 @@ async function runCodexAgent() {
 let fakeTotal = 0;
 async function runAgent() {
   if (AGENT === 'codex') return runCodexAgent();
+  if (AGENT === 'none') return new Promise(() => {}); // never "stops": there is nothing to stop
   if (process.env.FAKE) {
     for await (const m of inputs()) {
       const c = m.message.content;
@@ -400,12 +408,13 @@ const pushMemory = () => broadcast(memoryMsg());
 // Remove a member for good: delete their token, close every tab, and hand the session back if they were driving.
 const removeMember = (key) => {
   delToken.run(key);
+  team.removeMember(key);
   for (const [w, m] of socketsOf(key)) { m.dead = true; clients.delete(w); w.close(4403, 'removed'); setTimeout(() => w.terminate(), 1000); }
   clearDriverIfGone(key, 0);
   pushPeople();
 };
 
-const HELP = '/who /members /usage [today] /token /handoff [name] /save | ops: /invite /kick <name> /revoke <name> | owner: /op <name> /deop <name> /cap <name> <tokens|off|unlimited> /budget <dollars|off> /trust <guarded|trusted> /allow <Tool> /deny <Tool> /sandbox <read-only|write> (codex)';
+const HELP = '/who /members /usage [today] /token /handoff [name] /save | ops: /tell <name|all> <text> (to teammates\' own Claude Codes) /invite /kick <name> /revoke <name> | owner: /op <name> /deop <name> /cap <name> <tokens|off|unlimited> /budget <dollars|off> /trust <guarded|trusted> /allow <Tool> /deny <Tool> /sandbox <read-only|write> (codex)';
 
 const MANAGED = ['invite', 'token', 'kick', 'revoke', 'op', 'deop', 'cap', 'members']; // everything that grants, changes or removes access
 function command(ws, c, line) {
@@ -443,6 +452,16 @@ function command(ws, c, line) {
       return tell(ws, `invite link (single-use, ${ttlText(INVITE_TTL_MS)}): ${c.origin}/#${t}`);
     }
     case 'token': return tell(ws, `your token for the CLI/MCP (SANDWICH_TOKEN): ${c.token}`);
+    case 'tell': { // from the browser to people's own Claude Code agents. Ops only: a guest's words never reach anyone's Claude Code.
+      if (!need(isOp(c))) return;
+      const text = line.slice(1).split(/\s+/).slice(2).join(' ').trim();
+      if (!arg || !text) return tell(ws, 'usage: /tell <name|all> <text>');
+      if (text.length > teamLimits.MAX_MSG) return tell(ws, `too long (max ${teamLimits.MAX_MSG})`);
+      const all = arg.toLowerCase() === 'all';
+      if (!all && !team.hasAgentNamed(arg)) return tell(ws, `no teammate named ${arg} has joined with Claude Code`);
+      team.message({ key: c.key, name: c.name }, all ? null : arg, text);
+      return emit('system', `${c.name} → ${arg}'s agent: ${text}`);
+    }
     case 'kick': {
       if (!need(isOp(c))) return;
       if (!arg) return tell(ws, 'usage: /kick <name>');
@@ -548,15 +567,8 @@ function memoryApi(req, res) {
   if (req.method !== 'POST') return out(405, 'GET or POST');
   if (codexWritable() && who.role !== 'owner' && who.role !== 'op') return out(403, 'codex can write files right now, so only the owner and ops can add memory');
   if (limited('mem:' + hash(req.headers.authorization), MEM_RATE)) return out(429, 'slow down');
-  let body = '';
-  req.setEncoding('utf8'); // a multi-byte character split across chunks must not turn into U+FFFD
-  req.on('error', () => {});
-  req.on('data', (d) => { body += d; if (body.length > 65536) { out(413, 'too large'); req.destroy(); } });
-  req.on('end', () => {
-    if (res.writableEnded) return;
-    let m;
-    try { m = JSON.parse(body); } catch { return out(400, 'bad json'); }
-    if (!m || typeof m !== 'object' || !KINDS.includes(m.kind) || typeof m.text !== 'string' || !m.text.trim() || m.text.length > MAX_ENTRY) return out(400, `kind (${KINDS}) and text (max ${MAX_ENTRY} chars) required`);
+  readJson(req, res, 65536, (m) => {
+    if (!KINDS.includes(m.kind) || typeof m.text !== 'string' || !m.text.trim() || m.text.length > MAX_ENTRY) return out(400, `kind (${KINDS}) and text (max ${MAX_ENTRY} chars) required`);
     if (existsSync(MEMORY) && statSync(MEMORY).size > MAX_MEMORY_BYTES) return out(413, 'memory is full, run /save to compact it');
     const author = clean(who.name, 'member'); // always the session's own name; the request can't claim another
     try {
@@ -586,7 +598,23 @@ function internalApi(req, res) {
     res.writeHead(200); res.end('ok');
   });
 }
-const handler = (req, res) => (req.url.startsWith('/internal/') ? internalApi(req, res) : req.url.split('?')[0] === '/memory' ? memoryApi(req, res) : serveStatic(req, res, SITE, { routes: { '/': 'session.html' }, prefixes: ['/assets/', '/data/'] }));
+// Team API for people's own Claude Code agents: see team-api.mjs.
+const teamApi = createTeamApi({
+  team,
+  identify: (t) => {
+    const id = whoIs(t);
+    if (!id) return null;
+    return { key: HOSTED ? 'u:' + id.sub : id.role === 'owner' ? 'owner' : hash(t), name: id.role === 'owner' ? OWNER_TEAM_NAME : id.name, role: id.role };
+  },
+  redeem: (t, name) => { const got = redeem(t, name, 'member'); return got && { ...got, key: hash(got.token) }; },
+  newInvite: () => { const inv = token(); putToken(inv, 'invite', 'member', null, Date.now() + INVITE_TTL_MS); return inv; },
+  origin: (req) => originFrom(req.headers, !!tls, TRUST_PROXY),
+  inviteTtl: ttlText(INVITE_TTL_MS),
+  emit, limited, isOp,
+  membersAllowed: !(AGENT === 'codex' && !TRUST_MEMBERS),
+  vault: process.env.SANDWICH_VAULT || '',
+});
+const handler = (req, res) => (req.url.startsWith('/internal/') ? internalApi(req, res) : req.url.startsWith('/team/') ? teamApi(req, res) : req.url.split('?')[0] === '/memory' ? memoryApi(req, res) : serveStatic(req, res, SITE, { routes: { '/': 'session.html' }, prefixes: ['/assets/', '/data/'] }));
 const server = tls
   ? https.createServer({ cert: readFileSync(process.env.SANDWICH_CERT), key: readFileSync(process.env.SANDWICH_KEY) }, handler)
   : http.createServer(handler);
@@ -632,19 +660,22 @@ wss.on('connection', (ws, req) => {
   });
 });
 
+// Burn an invite (single-use, whether or not it had expired) and issue a session token. Null if t is not a live invite.
+function redeem(t, nameParam, fallback) {
+  const row = HOSTED ? null : getToken.get(hash(t));
+  if (row?.kind !== 'invite') return null;
+  delToken.run(hash(t));
+  if (!(row.expires > Date.now())) return null;
+  const chosen = pick(clean(nameParam, fallback), [...sessionNames(), ...ownerNames, OWNER_TEAM_NAME, ...[...clients.values()].map((m) => m.name)]);
+  const fresh = token();
+  putToken(fresh, 'session', 'member', chosen, Date.now() + SESSION_TTL_MS);
+  return { token: fresh, who: { role: 'member', name: chosen } };
+}
+
 function admit(ws, req, t, nameParam) {
   let who = whoIs(t);
-  const row = who || HOSTED ? null : getToken.get(hash(t));
-  if (row?.kind === 'invite') {
-    delToken.run(hash(t)); // single-use, burned whether or not it had expired
-    if (row.expires > Date.now()) {
-      const chosen = pick(clean(nameParam, 'guest'), [...sessionNames(), ...ownerNames, ...[...clients.values()].map((m) => m.name)]);
-      t = token();
-      putToken(t, 'session', 'member', chosen, Date.now() + SESSION_TTL_MS);
-      who = { role: 'member', name: chosen };
-      send(ws, { type: 'session', token: t });
-    }
-  }
+  const got = who ? null : redeem(t, nameParam, 'guest');
+  if (got) { t = got.token; who = got.who; send(ws, { type: 'session', token: t }); }
   if (!who) return ws.close(4401, 'invite required');
   // An old session token must not outlive the trust decision: codex without CODEX_TRUST_MEMBERS is owner-only.
   if (AGENT === 'codex' && !TRUST_MEMBERS && who.role !== 'owner') return ws.close(4403, 'codex mode is owner-only on this server');
@@ -691,6 +722,7 @@ function admit(ws, req, t, nameParam) {
       if (limited(c.key)) return tell(ws, 'slow down: too many messages');
       if (m.text.startsWith('/')) return command(ws, c, m.text.trim());
       emit(c.name, m.text);
+      if (AGENT === 'none') return; // chat only: there is no shared agent to send it to
       if (codexWritable() && !isOp(c)) return tell(ws, 'codex can write files right now, so only the owner and ops can steer it. Your message is visible to everyone.');
       if (driver && driver.key !== c.key) return tell(ws, `${driver.name} is driving; your message is visible but not sent to the agent`);
       if (queue.length >= MAX_QUEUE) return tell(ws, 'the agent is behind: too many messages are waiting. Try again in a moment.');

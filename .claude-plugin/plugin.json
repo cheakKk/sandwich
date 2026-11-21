@@ -1,0 +1,14 @@
+{
+  "name": "sandwich",
+  "version": "0.2.0",
+  "description": "Work on one project with teammates who each bring their own Claude Code: agents see what the others are doing, claim files, message each other mid-task, and share notes into Obsidian. Outsiders can join a shared session from a browser.",
+  "author": { "name": "cheakKk" },
+  "repository": "https://github.com/cheakKk/sandwich",
+  "mcpServers": {
+    "sandwich": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/plugin/mcp.mjs"],
+      "env": { "CLAUDE_PLUGIN_DATA": "${CLAUDE_PLUGIN_DATA}", "CLAUDE_PROJECT_DIR": "${CLAUDE_PROJECT_DIR}" }
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "description": "Sandwich team coordination: shares what your agent is doing, claims files before edits, delivers teammates' messages mid-task, and wakes on a direct message. Does nothing in folders that haven't joined a team.",
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/plugin/hook.mjs\" SessionStart", "timeout": 30 }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/plugin/hook.mjs\" UserPromptSubmit", "timeout": 25 }] }],
+    "PreToolUse": [{ "matcher": "^(Edit|Write|MultiEdit|NotebookEdit)$", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/plugin/hook.mjs\" PreToolUse", "timeout": 10 }] }],
+    "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/plugin/hook.mjs\" PostToolUse", "timeout": 10 }] }],
+    "Stop": [{ "hooks": [
+      { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/plugin/hook.mjs\" Stop", "timeout": 15 },
+      { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/plugin/hook.mjs\" Wait", "asyncRewake": true, "timeout": 3600 }
+    ] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/plugin/hook.mjs\" SessionEnd", "timeout": 10 }] }]
+  }
+}
