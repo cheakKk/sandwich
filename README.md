@@ -182,3 +182,7 @@ QM is a company-wide system: isolated workspaces per person and per Slack room, 
 ### Website (design preview)
 
 `node site/serve.mjs` then open http://127.0.0.1:4000/ (landing, sign-in, dashboard, Terms, Privacy). Hand-built, no framework, no third-party requests. The live session page is served by the worker at `/`; `/?demo` replays a recorded real session. Sign-in, the beta form and the dashboard are design previews with sample data; Terms and Privacy are drafts. Direction and rules: `docs/design.md`. Tools: `tools/record-demo.mjs`, `tools/shoot.mjs`.
+
+## License
+
+MIT. See [LICENSE](LICENSE). Free to use, change and share, including commercially; keep the copyright notice.
