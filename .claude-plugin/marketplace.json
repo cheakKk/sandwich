@@ -1,7 +1,8 @@
 {
   "name": "sandwich",
+  "description": "Sandwich: work on one project with teammates who each use their own Claude Code.",
   "owner": { "name": "cheakKk" },
   "plugins": [
-    { "name": "sandwich", "source": "./", "description": "Share a live Claude session from your project folder with one link." }
+    { "name": "sandwich", "source": "./", "description": "Teammates' Claude Codes see each other's work, claim files, message each other mid-task, and share the host's Obsidian vault." }
   ]
 }

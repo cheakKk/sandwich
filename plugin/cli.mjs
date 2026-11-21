@@ -30,7 +30,8 @@ switch (cmd) {
     const root = projectRoot(cwd);
     const prev = readTeams(dir)[root] ?? {};
     saveTeam(dir, root, { url: url.origin, token: body.token, name: body.name, vault: prev.vault, sharePrompts: prev.sharePrompts });
-    console.log(`Joined as "${body.name}" for ${root}. Start a new Claude Code session here (or /clear) so the hooks pick it up.`);
+    console.log(`Joined ${url.host} as "${body.name}" for ${root}. Start a new Claude Code session here (or /clear) so the hooks pick it up.`);
+    console.log('Whoever runs that team sees the start of your prompts (unless /sandwich:prompts off), the names of files you edit and your agent\'s messages, and can send text to your Claude Code. Only join teams of people you trust; /sandwich:leave undoes this.');
     break;
   }
   case 'invite': {
@@ -70,6 +71,7 @@ switch (cmd) {
   case 'leave': {
     const team = teamFor(cwd, dir) ?? fail('This folder is not in a Sandwich team.');
     await api(team, 'POST', '/team/release', {}).catch(() => {});
+    await api(team, 'POST', '/team/status', { text: '' }).catch(() => {});
     saveTeam(dir, team.root, null);
     console.log('Left the team for this folder. Your claims were released.');
     break;

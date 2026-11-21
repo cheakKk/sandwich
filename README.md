@@ -1,37 +1,105 @@
 # Sandwich
 
-A shared, invite-only AI session for small teams. One agent (Claude or Codex) runs on the host's machine; teammates watch it work live, steer it together, hand the wheel to each other, and keep a shared project memory that any tool can read and write. Built around YC's "Multiplayer AI" request: shared live agent sessions you can watch, redirect and hand off, with a shared history of what the agent did and why.
+Work on one project with your teammates, each using your own Claude Code. Sandwich keeps your agents in step: they see what the others are working on, avoid editing the same files, message each other mid-task, and share one knowledge base through the host's Obsidian vault.
 
-## Claude Code plugin
+Clients and other outsiders can join from a browser, with nothing to install.
+
+## Install
+
+In Claude Code:
 
 ```
 /plugin install sandwich --marketplace cheakKk/sandwich
 ```
 
-Teammates each bring their own Claude Code and work on their own copy of the same git repo. Sandwich keeps their agents in step:
+Or in two steps: `/plugin marketplace add cheakKk/sandwich`, then `/plugin install sandwich@sandwich`.
 
-- **Who is doing what:** each prompt is shared as a one-line "working on", and every agent sees the others' at the start of a session and with each prompt.
-- **File claims:** an edit claims the file. Another agent's edit to a claimed file is refused with the reason, so it messages the holder instead. A claim is released automatically once its file has nothing uncommitted and matches the remote. Otherwise it's released when the session ends, or after 2 hours without edits.
-- **Messages mid-task:** agents message each other with the `send_message` tool. New messages are delivered after the agent's next step, even mid-task (checked at most every 5 seconds). An agent about to finish is held back to handle them. A direct message wakes an idle Claude Code, but a woken agent may only reply. It doesn't change files or run commands until its user says so.
-- **Teammates' words are never instructions:** messages, statuses and claim notes are labelled as data, and each agent's own user decides what it does.
-- **Git sync:** at session start and with each prompt, teammates' pushed commits are pulled, but only as a fast-forward that never touches local edits. Git never waits on a login prompt. Agents are told to commit and push finished work, with their user's OK.
-- **Obsidian:**
-  - **On the host:** `/sandwich:obsidian <vault folder>` shares the vault with every teammate's Claude Code. Their agents get `vault_search` and `vault_read` for all Markdown notes, but not hidden folders like `.obsidian`, and nothing reached through a link out of the vault. With `vault_write` they can add notes, but only under `Sandwich/`, so the host's own notes are never changed. Browser guests can't see it.
-  - **On a teammate:** the same command writes the team's status, claims and project memory to `Sandwich/<project>-<id>.md` in their own vault.
-- **Browser guests:** guests with no Claude Code join the session page and chat. They can steer a shared Claude if the host set a key. They can't reach anyone's Claude Code: the team API refuses their tokens, and only the host and ops can `/tell <name|all> <text>` to teammates' agents.
+Requirements: Node 22 or later and git. If teammates are outside your network, the host also needs [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) (`winget install --id Cloudflare.cloudflared` on Windows, `brew install cloudflared` on macOS). It's free and needs no Cloudflare account.
 
-Commands: `/sandwich:start` (host), `/sandwich:invite` (one link per teammate), `/sandwich:join <link> [name]`, `/sandwich:obsidian <vault|off>`, `/sandwich:prompts <on|off>`, `/sandwich:leave`, `/sandwich:stop`.
+## Quick start
 
-1. For teammates outside your network, the host installs cloudflared (`winget install --id Cloudflare.cloudflared`, or `brew install cloudflared`). It's free and needs no account. The public address changes each time the host starts, so teammates rejoin with a new invite.
-2. Optional shared browser agent: the host sets `SANDWICH_ANTHROPIC_API_KEY` (a key with a low spend limit, `setx SANDWICH_ANTHROPIC_API_KEY "<key>"`). It bills that key, never a Claude subscription. Without it there is no shared agent, and teammates' own Claude Codes do the work.
-3. What teammates see:
-   - your prompts (the first 160 characters). Prompts that look like they contain a key or password are never shared, and `/sandwich:prompts off` shares only "working".
-   - the files you edit, and your agent's messages
-   - the host's vault, if the host shared it
+**Host** (in the project folder):
 
-   Nothing else leaves your machine except what you push to git.
+1. `/sandwich:start` starts the team hub and a public link.
+2. `/sandwich:invite` makes a single-use invite. Run it once for each teammate and send each link privately.
 
-## Run it
+**Teammate** (in their own clone of the same repo):
+
+1. `/sandwich:join <invite link>`
+2. Start a new Claude Code session in that folder (or `/clear`).
+
+After that, everyone uses Claude Code as usual.
+
+## How it works
+
+The host's computer runs a small hub. Each person's Claude Code connects to it through the plugin's hooks and tools.
+
+- **Who's doing what.** When you send a prompt, its first line is shared with the team. If you ask for "refactor the settings page" while a teammate's agent is "adding dark mode to settings", your agent knows right away.
+- **No edit collisions.** Editing a file claims it. If another agent tries to edit a claimed file, the edit is refused, and that agent is told to message the person holding it. A claim is released once the work is committed and pushed. Otherwise it's released when the session ends, or after 2 hours without edits.
+- **Agents talk to each other.** Agents message each other with `send_message`. Messages arrive between steps, even mid-task. An agent about to finish is held back to reply first. A direct message wakes an idle Claude Code, which may answer but won't change anything until its own user says so.
+- **Same code, safely.** At the start of each session and with every prompt, teammates' pushed commits are pulled, but only as a fast-forward that never touches your unsaved edits. Commits that change agent instructions or tool settings (`CLAUDE.md`, `.claude/`, `.mcp.json`, `.vscode/`, git hooks) are never pulled automatically; you review them first.
+- **Shared Obsidian vault.** When the host runs `/sandwich:obsidian <vault>`, every teammate's agent can search and read the host's notes (`vault_search`, `vault_read`). They can add new notes, but only under `Sandwich/` (`vault_write`), so the host's own notes are never changed. When a teammate runs the same command, their own vault gets a live note of the team's status and the shared project memory.
+- **Browser guests.** Clients can open the session page to watch and chat. If the host sets a Claude API key, they can also steer a shared Claude. They can't reach anyone's own Claude Code.
+
+## Commands
+
+| Command | Who | What it does |
+|---|---|---|
+| `/sandwich:start` | host | Start the hub, the public link and your owner link |
+| `/sandwich:invite` | host | Make a single-use invite for a teammate |
+| `/sandwich:join <link> [name]` | teammate | Join a team for this folder |
+| `/sandwich:obsidian <vault\|off>` | anyone | Host: share your vault with the team. Teammate: write a team status note into your vault. |
+| `/sandwich:prompts <on\|off>` | anyone | Share the start of your prompts, or only that you're working |
+| `/sandwich:leave` | teammate | Leave the team and release your claims |
+| `/sandwich:stop` | host | Stop the hub and the public link |
+
+Browser guests, from the session page: the host and ops can send a message to teammates' agents with `/tell <name|all> <text>`; `/help` lists the rest.
+
+## Agent tools
+
+| Tool | What it does |
+|---|---|
+| `team_status` | What each teammate's agent is working on, claimed files, new messages |
+| `send_message` | Message one teammate's agent, or everyone |
+| `claim_files` / `release_files` | Claim files or folders ahead of a change, and release them |
+| `get_context` / `append_memory` | Read and add to the shared project memory (`PROJECT_MEMORY.md`) |
+| `vault_search` / `vault_read` / `vault_write` | Search and read the host's shared vault; write notes under `Sandwich/` |
+
+## What gets shared
+
+- the start of your prompts (up to 160 characters). Prompts that look like they contain a key or password are never shared, and `/sandwich:prompts off` shares only "working".
+- the names of files you edit
+- your agent's messages
+- the host's vault, if the host shares it
+
+Nothing else leaves your machine, except what you push to git.
+
+## Security
+
+- Only the host, ops and teammates who joined with Claude Code can use the team features. Browser guests can't.
+- A teammate's messages, statuses and notes are always presented to agents as information, not instructions. Each agent's own user decides what it does.
+- Text from teammates is cleaned before any agent sees it, so nobody can fake a message from someone else.
+- Vault access is limited to Markdown notes. Hidden folders and anything outside the vault (including through links) can't be reached, and writing is limited to `Sandwich/`.
+- The host's machine is protected from overload: limits on requests, waiting connections, note sizes and note counts.
+- Joining a team means trusting its host. Their hub can send text to your Claude Code, and it sees the shared items listed above. `/sandwich:join` reminds you of this.
+
+See [`docs/threat-model.md`](docs/threat-model.md) for the full threat model.
+
+## Billing
+
+Everyone uses their own Claude Code and their own plan. The optional shared browser agent bills a separate Claude API key the host sets as `SANDWICH_ANTHROPIC_API_KEY`, never anyone's Claude subscription. Without that key there is no shared agent, and teammates' own Claude Codes do the work. On Windows, set the key once with `setx SANDWICH_ANTHROPIC_API_KEY "<key>"` and restart Claude Code; give it a low spend limit in the Claude Console.
+
+## Limits
+
+- The host's computer has to stay on while the team is working.
+- The public link changes every time the host starts, so teammates need a new invite.
+- Tested with simulated teammates on Windows. Real two-machine use, and use on macOS and Linux, haven't been tried yet.
+
+## Development
+
+Everything below is for working on Sandwich itself, or running its server without the plugin.
+
+### Run the server directly
 
 ```
 npm install
@@ -58,11 +126,11 @@ Behind a TLS tunnel or host, invite links follow its `x-forwarded-proto`/`x-forw
 
 Memory for plain Claude Code / Codex sessions: `claude mcp add sandwich -e SANDWICH_TOKEN=<token from /token> -- node mcp.mjs`, or `node client.mjs get|add <note|decision|task|done|handoff> <text>`. Memory lives in `PROJECT_MEMORY.md` in the project folder; `/save` rewrites the summary at the top and moves old progress lines to `PROJECT_MEMORY.archive.md` (and keeps a `.bak`); it never deletes done, decision, handoff or task lines.
 
-## How it differs from QM (YC's open-source harness)
+### How it differs from QM (YC's open-source harness)
 
 QM is a company-wide system: isolated workspaces per person and per Slack room, deployed to your own Fly or AWS account with Postgres, for one organization of internal users. Its own `SECURITY.md` says cross-organization and external users are not supported. Sandwich is the opposite shape: one shared live session, `node server.js` and an invite link, small teams, and people outside your organization (a client, a freelancer) can be invited into the same session. See `SECURITY.md` here for what is and is not enforced.
 
-## Status
+### Status
 
 | Milestone | State |
 |---|---|
@@ -73,17 +141,17 @@ QM is a company-wide system: isolated workspaces per person and per Slack room, 
 | M3 web UI for non-developers | next (waiting on design direction; the current page is a working placeholder) |
 | M4 project hub, hosting, Terms/Privacy, public launch | not started |
 
-## Known limits
+### Known limits
 
 - Codex mode has no per-command approval (the SDK is non-interactive); the sandbox is the only guardrail and Codex may read files outside the project. Per-command approval needs Codex's `app-server` protocol.
 - Whose plan pays: the host's own Claude or Codex login. Anthropic's terms do not allow routing other people's use through a subscription in a product, so a paid service needs bring-your-own API keys (or Anthropic's written OK). Not solved yet. Usage is now recorded and capped per member, but nothing splits or collects money.
 - Session tokens travel in the page URL and the WebSocket URL, so a tunnel or proxy log can record them.
 - Approvals are only as good as the op reading them: once an op allows a shell command, it runs with the host's rights.
 
-## Tests
+### Tests
 
 `npm test` runs unit tests and fake-agent integration suites (Claude mode, Codex mode with and without trusted members, an agent that ends, abuse cases) plus a real-browser check in headless Edge (skipped if Edge is missing). It needs port 3000 free. Runs against the real Claude or Codex agent are manual.
 
-## Website (design preview)
+### Website (design preview)
 
 `node site/serve.mjs` then open http://127.0.0.1:4000/ (landing, sign-in, dashboard, Terms, Privacy). Hand-built, no framework, no third-party requests. The live session page is served by the worker at `/`; `/?demo` replays a recorded real session. Sign-in, the beta form and the dashboard are design previews with sample data; Terms and Privacy are drafts. Direction and rules: `docs/design.md`. Tools: `tools/record-demo.mjs`, `tools/shoot.mjs`.

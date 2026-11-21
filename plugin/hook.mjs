@@ -4,7 +4,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { api, describe, due, landedClaims, mirrorToVault, pullTeammates, readCursor, relPath, saveCursor, shareable, teamFor } from './team-client.mjs';
+import { api, clean, describe, due, landedClaims, mirrorToVault, pullTeammates, readCursor, relPath, saveCursor, shareable, teamFor } from './team-client.mjs';
 
 const event = process.argv[2];
 let input = {};
@@ -33,7 +33,7 @@ try {
       deliver(s);
       await mirrorToVault(team, s).catch(() => {});
       context([
-        `This project is shared through Sandwich: teammates work on the same repo with their own Claude Code, and you are "${s.you}". ` +
+        `This project is shared through Sandwich: teammates work on the same repo with their own Claude Code, and you are "${clean(s.you, 40)}". ` +
           'Before starting a piece of work, check the sandwich team_status tool if it might overlap with a teammate. ' +
           'Edits to files a teammate has claimed are refused; message them (send_message) instead of working around it. ' +
           'When a piece of work is finished, commit and push it (with your user\'s OK) so teammates\' agents receive it; claims on pushed files are released automatically.',
@@ -63,9 +63,10 @@ try {
       if (!p) process.exit(0);
       const r = await api(team, 'POST', '/team/claim', { paths: [p], note: 'editing' });
       if (r.ok) process.exit(0);
-      const c = r.conflicts[0];
+      const c = r.conflicts?.[0] ?? {};
+      const by = clean(c.by, 40), held = clean(c.heldPath, 300);
       say({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
-        permissionDecisionReason: `${c.by}'s agent has claimed ${c.heldPath}. Don't edit it: use the sandwich send_message tool to ask ${c.by} to make the change or release it, or work on something else meanwhile.` } });
+        permissionDecisionReason: `${by}'s agent has claimed ${held}. Don't edit it: use the sandwich send_message tool to ask ${by} to make the change or release it, or work on something else meanwhile.` } });
       break;
     }
     case 'PostToolUse': {

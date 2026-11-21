@@ -6,6 +6,12 @@ const MAX_PATHS = 50;
 const MAX_MSG = 2000;
 const KEEP_MSGS = 2000;
 
+// Teammates' text is shown to agents one item per line, so a line break inside it could pose as another sender's line.
+// Everything stored is flattened to one line, with control characters removed.
+const LINE_BREAKS = new RegExp('\\s*[\\r\\n' + String.fromCharCode(0x2028, 0x2029) + ']+\\s*', 'g');
+const CONTROL = new RegExp('[' + String.fromCharCode(0) + '-' + String.fromCharCode(0x1f) + String.fromCharCode(0x7f) + ']', 'g');
+export const oneLine = (s) => String(s ?? '').replace(LINE_BREAKS, ' / ').replace(CONTROL, '').trim();
+
 export function teamStore(db, now = () => Date.now()) {
   db.exec(`create table if not exists team_msgs(id integer primary key, ts integer, from_key text, from_name text, to_name text, text text);
     create table if not exists team_claims(path text primary key, key text, name text, note text, expires integer);
@@ -22,15 +28,17 @@ export function teamStore(db, now = () => Date.now()) {
     hasAgentNamed(name) { return !!db.prepare('select 1 from team_agents where lower(name) = lower(?)').get(name); },
     // to: a member name, or null for everyone. Names are compared case-insensitively.
     message(who, to, text) {
-      db.prepare('insert into team_msgs(ts,from_key,from_name,to_name,text) values(?,?,?,?,?)').run(now(), who.key, who.name, to ? String(to).toLowerCase() : null, text);
+      db.prepare('insert into team_msgs(ts,from_key,from_name,to_name,text) values(?,?,?,?,?)').run(now(), who.key, who.name, to ? String(to).toLowerCase() : null, oneLine(text));
       db.prepare('delete from team_msgs where id <= (select max(id) from team_msgs) - ?').run(KEEP_MSGS);
     },
     status(who, text) {
+      text = oneLine(text);
       if (text) db.prepare('insert into team_status(key,name,text,ts) values(?,?,?,?) on conflict(key) do update set name=excluded.name, text=excluded.text, ts=excluded.ts').run(who.key, who.name, text, now());
       else db.prepare('delete from team_status where key = ?').run(who.key);
     },
     // Claims every path or none: a conflict on one leaves the others unclaimed, so an agent never holds half a change.
     claim(who, paths, note = '') {
+      note = oneLine(note);
       live();
       const held = db.prepare('select path, name, note from team_claims where key != ?').all(who.key);
       const conflicts = paths.flatMap((p) => held.filter((r) => overlaps(p, r.path)).map((r) => ({ path: p, heldPath: r.path, by: r.name, note: r.note })));

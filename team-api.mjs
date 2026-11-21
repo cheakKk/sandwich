@@ -8,6 +8,8 @@ import { cleanPath, limits } from './team.mjs';
 import { vaultAccess } from './vault.mjs';
 
 const MAX_WAIT_MS = 50000;
+const MAX_WAITS_EACH = 3; // one per open Claude Code session is normal
+const MAX_WAITS = 200;
 
 // Reads a small JSON object body. Answers 413 or 400 itself; cb only gets a plain object.
 export function readJson(req, res, max, cb) {
@@ -30,6 +32,8 @@ export function readJson(req, res, max, cb) {
 export function createTeamApi(deps) {
   const { team, identify, redeem, newInvite, origin, inviteTtl, emit, limited, isOp, membersAllowed } = deps;
   let vault = null, vaultPath = '';
+  const waits = new Map(); // member key -> open long polls
+  let totalWaits = 0;
   const setVault = (p) => {
     if (!p) { vault = null; vaultPath = ''; return null; }
     const abs = resolve(p);
@@ -66,11 +70,18 @@ export function createTeamApi(deps) {
 
     if (route === 'GET /team/sync') return json(200, { you: who.name, vault: !!vault, ...team.sync(who, since) });
     if (route === 'GET /team/wait') { // long poll: answers as soon as a message for this member arrives, or after ~50 s
+      // Each open wait is a timer on this machine, so they are capped per member and in total.
+      const mine = waits.get(who.key) ?? 0;
+      if (mine >= MAX_WAITS_EACH || totalWaits >= MAX_WAITS) return json(429, { error: 'too many open waits' });
+      waits.set(who.key, mine + 1); totalWaits++;
+      let open = true;
+      const finish = () => { if (!open) return; open = false; totalWaits--; const n = (waits.get(who.key) ?? 1) - 1; n ? waits.set(who.key, n) : waits.delete(who.key); };
+      res.on('close', finish);
       const start = Date.now();
       const direct = u.searchParams.get('direct') === '1';
       const tick = () => {
-        if (res.destroyed) return;
-        if (team.hasMessage(who, since, direct) || Date.now() - start > MAX_WAIT_MS) return json(200, { you: who.name, vault: !!vault, ...team.sync(who, since) });
+        if (res.destroyed) return finish();
+        if (team.hasMessage(who, since, direct) || Date.now() - start > MAX_WAIT_MS) { finish(); return json(200, { you: who.name, vault: !!vault, ...team.sync(who, since) }); }
         setTimeout(tick, 1000);
       };
       return tick();

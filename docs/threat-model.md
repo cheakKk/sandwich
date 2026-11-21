@@ -60,3 +60,40 @@ A long-lived key vault in v1 (hold the key per session instead); trusting `serve
   - *Not proven yet:* that an approved shell command running as the other user cannot read or edit the worker's database. `privsplit.test.mjs` is written but needs Linux and root; this machine has neither WSL nor Docker, so it is skipped here. It must be run in the container driver environment (T16) before the Checkpoint B gate.
   - *Decision:* a user split inside one container is defense in depth, not the boundary. T7 (authority in the control plane) stays required, and the container driver should still prefer separating worker and agent where the host allows it.
   - Data folder is created `0700` and the database `0600` on POSIX systems.
+
+# Threat model: local team plugin (bring your own Claude Code)
+
+Written 2026-11-20 for the Claude Code plugin (`team.mjs`, `team-api.mjs`, `vault.mjs`, `plugin/`). The host runs the hub on their machine behind a Cloudflare quick tunnel. Each teammate's Claude Code talks to the hub from their own machine.
+
+**Attackers:**
+- a browser guest (for example, a client invited to watch)
+- a teammate's Claude Code, or a teammate who is themselves hostile
+- a malicious host or hub (the hub decides what text reaches every teammate's agent)
+- anyone who holds the tunnel address
+
+**Assets:**
+- each person's machine, reached through their own Claude Code (files, shell, credentials)
+- the host's Obsidian vault
+- prompts and file names
+- invite and session tokens (`teams.json` in the plugin's data folder)
+
+**Trust boundaries:**
+1. internet to hub, through the tunnel
+2. hub to each teammate's Claude Code: the hooks' context and the MCP tool results
+3. git remote to each working tree, through auto-pull
+4. teammates' agents to the host's vault
+
+| # | Sev | Threat | Mitigation | Test (`plugin.test.mjs`) | Status |
+|---|---|---|---|---|---|
+| 1 | Critical | A guest or teammate steers someone else's Claude Code, even while that person is away | Only the host, ops and members who joined with `/sandwich:join` reach the team API. Browser tokens get 403, and browser `/tell` is ops-only. All teammate text is framed as data, never instructions. A woken idle agent may only reply; no file or shell actions without its user. | browser guests cannot use the team API; direct message wakes (reply only) | done |
+| 2 | High | Forged sender lines or fake Claude Code context tags inside a message | The hub stores every text as one line without control characters. The client re-cleans everything it gets from the hub (one line, capped, tag-shaped text removed), so a modified hub can't forge lines either. | cannot forge another sender's line; malicious hub's reply is cleaned | done |
+| 3 | High | Auto-pull brings in a teammate's change to `CLAUDE.md`, `.claude/`, `.mcp.json`, `.vscode/` or git hook managers, which the next session obeys or runs | Commits touching those paths are never fast-forwarded automatically. The agent tells its user to review them and pull by hand. Other changes come in only as a fast-forward, and git never waits on a login prompt. | change to agent instructions is never pulled in unseen | done |
+| 4 | High | Teammates' agents read beyond what the host meant to share from the vault, or write outside it | Only Markdown notes can be read, never hidden folders, and links are resolved so nothing outside the vault is reachable. Writes go only under `Sandwich/`: folders are created one level at a time and links are refused. Windows stream, device and trailing-dot names are refused. The host is asked to confirm before sharing, and can share a subfolder instead. | vault read-only outside Sandwich/; Windows tricks refused | done |
+| 5 | Medium | Prompts or secrets leak to teammates | A prompt is shared only up to 160 characters, and not at all if it looks like it holds a key or password. `/sandwich:prompts off` shares only "working". Prompts are never posted to the browser chat. | prompts that look like they hold a secret are not shared | done |
+| 6 | Medium | A teammate exhausts the host's machine | Per-member request limit; at most 3 open long polls per member and 200 in total; notes read at most 200 KB; `Sandwich/` capped at 2000 notes of 64 KB; claims capped at 50 paths per call and expire after 2 hours. | open long polls capped; vault quota | done |
+| 7 | Medium | A malicious hub sends huge replies or attacker text | Hub replies over 1 MB are rejected. Hub text is cleaned and capped (see #2). `/sandwich:join` names the host and warns what joining shares. | malicious hub's reply is cleaned | done |
+| 8 | Medium | A hostile teammate claims everything so others' edits are refused | The host or an op can `/kick` or `/revoke` them, which clears their claims. Claims expire after 2 hours without edits. The hooks let edits through when the hub can't be reached. | (manual) | accepted |
+| 9 | Low | Owner token sits in plaintext in `teams.json` and in the start command's output | The file lives in the user's own profile (mode 600 where supported) and is deleted on uninstall. The owner link is shown only to the host. | (manual) | accepted |
+| 10 | Low | Dependency advisories in the MCP SDK's bundled web server (express, hono, body-parser, qs, fast-uri) | Not reachable: the plugin uses the SDK's stdio transport only. Update with a non-forced `npm audit fix` as its own tested change. | `npm audit --omit=dev` | open |
+
+Not covered yet: real Claude Code loading the plugin, the tunnel, two machines, macOS and Linux.
