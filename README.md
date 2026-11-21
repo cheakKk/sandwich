@@ -4,6 +4,32 @@ Work on one project with your teammates, each using your own Claude Code. Sandwi
 
 Clients and other outsiders can join from a browser, with nothing to install.
 
+## TL;DR (the short, non-technical version)
+
+**What it is:** a free add-on for Claude Code (Anthropic's AI coding assistant) that lets a group of people build the same project together, each with their own AI assistant, without stepping on each other's toes.
+
+**Think of it like this:** you and your teammates each have an AI helper. Sandwich puts all the helpers in one group chat, so they know who is working on what, don't change the same file at the same time, and can ask each other questions while they work.
+
+**What you need:**
+- Claude Code, installed and signed in
+- the project saved on GitHub (or another git service), with each person having their own copy
+- for the person running the team, a free program called cloudflared, so people outside your home or office network can connect
+
+**How to use it, in three steps:**
+1. Everyone installs the add-on by typing this into Claude Code: `/plugin install sandwich --marketplace cheakKk/sandwich`
+2. One person (the "host") opens the project and types `/sandwich:start`, then `/sandwich:invite` once per teammate. Each teammate gets their own link, sent privately.
+3. Each teammate opens their copy of the project, types `/sandwich:join` followed by their link, and starts a new Claude Code session. That's it: keep working as usual.
+
+**What your teammates can see:** the first line of what you ask your assistant (never anything that looks like a password or key, and you can switch this off with `/sandwich:prompts off`), which files you're changing, and messages your assistant sends them. Nothing else on your computer is shared.
+
+**Is it safe?** Each person stays in charge of their own assistant. A teammate can ask your assistant something, but it won't change your files or run anything because of that without your OK. Only join teams run by people you trust.
+
+**Uses Obsidian?** The host can share their Obsidian notes with the team by typing `/sandwich:obsidian` followed by the vault's folder. Everyone's assistants can then look things up in those notes. They can add new notes in a `Sandwich` folder, but can't change the host's own notes.
+
+**Clients or people without Claude Code:** they can watch and chat from a web browser.
+
+The rest of this page has the details.
+
 ## Install
 
 In Claude Code:
